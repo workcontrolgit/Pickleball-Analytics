@@ -192,22 +192,43 @@ class Analytics:
 
         in_play = self._ball_in_bounds(ball_proj)
         if in_play:
-            # ball present & in-bounds → rally is active/continues
+            # Set start frame on first active frame of this rally
+            if not self._rally_active:
+                self._rally_start_frame = frame_idx
+                self._rally_net_crossings = 0
+                self._ball_last_side = None
+
             self._rally_active = True
             self._rally_frames += 1
             self._gap_frames = 0
+
+            # Net crossing detection
+            if self._net_y is not None and ball_proj is not None:
+                current_side = 'above' if ball_proj[1] < self._net_y else 'below'
+                if self._ball_last_side is not None and current_side != self._ball_last_side:
+                    self._rally_net_crossings += 1
+                self._ball_last_side = current_side
         else:
             if self._rally_active:
-                # grace period before we call the rally "over"
                 self._gap_frames += 1
                 if self._gap_frames >= self._gap_threshold:
-                    # finalize rally
-                    if self._rally_frames > 0:
-                        self._rallies.append(self._rally_frames)
-                    self._rally_active = False
-                    self._rally_frames = 0
-                    self._gap_frames = 0
+                    self._finalize_current_rally(frame_idx=frame_idx - self._gap_frames)
 
+    def _finalize_current_rally(self, frame_idx: int) -> None:
+        """Finalize the current rally: record if it qualifies, then reset state."""
+        if self._rally_frames > 0:
+            self._rallies.append(self._rally_frames)
+            if self._rally_net_crossings >= 5 and self._rally_start_frame is not None:
+                end_frame = frame_idx
+                self._long_rallies.append(
+                    (self._rally_start_frame, end_frame, self._rally_net_crossings)
+                )
+        self._rally_active = False
+        self._rally_frames = 0
+        self._gap_frames = 0
+        self._rally_start_frame = None
+        self._rally_net_crossings = 0
+        self._ball_last_side = None
 
     # ---------- panel renderers ----------
     def panel_player_heatmap(self, panel_size, bird_reference=None):
