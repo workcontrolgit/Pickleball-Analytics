@@ -39,6 +39,7 @@ class App(ctk.CTk):
         self.title("Pickleball Computer Vision Project")
         self.geometry("1200x500")
         self.video_path = None
+        self.mode_var = ctk.StringVar(value="Full Analytics")
 
         # these vars are kept for compatibility, but not shown as toggles
         self.playerHeatmap_var = ctk.BooleanVar(value=True)
@@ -57,16 +58,27 @@ class App(ctk.CTk):
         left_frame = ctk.CTkFrame(self, corner_radius=10)
         left_frame.grid(row=0, column=0, rowspan=3, padx=20, pady=20, sticky="nsew")
         left_frame.grid_columnconfigure(0, weight=1)
+        left_frame.grid_rowconfigure((0, 1, 2, 3), weight=1)
 
         self.select_btn = ctk.CTkButton(left_frame, text="Select Video", command=self.select_video)
         self.select_btn.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
-        self.process_btn = ctk.CTkButton(left_frame, text="Process Video", command=self.process_video_thread, state="disabled")
-        self.process_btn.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        self.mode_selector = ctk.CTkSegmentedButton(
+            left_frame,
+            values=["Full Analytics", "Rallies Only", "Full + Rallies"],
+            variable=self.mode_var,
+            state="disabled",
+        )
+        self.mode_selector.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+
+        self.process_btn = ctk.CTkButton(
+            left_frame, text="Process Video", command=self.process_video_thread, state="disabled"
+        )
+        self.process_btn.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
 
         # Status
         status_frame = ctk.CTkFrame(left_frame, corner_radius=10, fg_color="#2a2d2e")
-        status_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="nsew")
+        status_frame.grid(row=3, column=0, padx=20, pady=(10, 20), sticky="nsew")
         status_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(status_frame, text="Status:", font=ctk.CTkFont(size=14, weight="bold")).grid(
@@ -128,6 +140,7 @@ class App(ctk.CTk):
         if self.video_path:
             self.status_label.configure(text="Video selected", text_color="green")
             self.process_btn.configure(state="normal")
+            self.mode_selector.configure(state="normal")
         else:
             self.status_label.configure(text="Video not selected", text_color="red")
 
@@ -149,7 +162,13 @@ class App(ctk.CTk):
         def update_progress(value):
             self.after(0, lambda: self.progress_bar.set(value))
         try:
-            processor = VideoProcessor(self.video_path, filters)
+            mode_map = {
+                "Full Analytics": "full",
+                "Rallies Only": "rallies_only",
+                "Full + Rallies": "full_and_rallies",
+            }
+            mode = mode_map[self.mode_var.get()]
+            processor = VideoProcessor(self.video_path, filters, mode=mode)
             processor.process_video(progress_callback=update_progress)
             self.status_label.configure(text="Processing completed!", text_color="green")
         except Exception as e:
