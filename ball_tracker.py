@@ -31,16 +31,18 @@ Assumptions
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
 import pandas as pd
+import torch
+from ultralytics import YOLO
 
 class BallTracker:
     def __init__(self, model_path):
         self.model = YOLO(model_path)
+        self.device = 0 if torch.cuda.is_available() else "cpu"
 
     def detect_frame(self, frame):
         """Detect ball in a single frame, return dict with bbox if found"""
-        results = self.model.predict(frame, conf=0.15)[0]
+        results = self.model.predict(frame, conf=0.15, device=self.device)[0]
         ball_dict = {}
         for box in results.boxes:
             bbox = box.xyxy.tolist()[0]

@@ -29,19 +29,21 @@ Assumptions
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 class PlayerTracker:
     def __init__(self, model_path, conf_threshold=0.5):
         self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
+        self.device = 0 if torch.cuda.is_available() else "cpu"
 
     def detect_players(self, frame):
         """
         Run YOLO player detection on frame.
         Returns list of bounding boxes in format [x1, y1, x2, y2].
         """
-        results = self.model.predict(frame, conf=self.conf_threshold)[0]
+        results = self.model.predict(frame, conf=self.conf_threshold, device=self.device)[0]
         boxes = []
         for box in results.boxes:
             bbox = box.xyxy.cpu().numpy()[0]
