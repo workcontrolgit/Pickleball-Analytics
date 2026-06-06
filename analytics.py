@@ -106,6 +106,13 @@ class Analytics:
         self._rallies = []               # list of rally lengths in frames
         self._elapsed_frames = 0         # for tempo calculation (overall)
 
+        # --- Net crossing / rally clip tracking ---
+        self._net_y = None                   # net midpoint in bird coords (set from kitchen bounds)
+        self._ball_last_side = None          # 'above' | 'below' | None
+        self._rally_net_crossings = 0        # crossings in current rally
+        self._rally_start_frame = None       # frame index when current rally began
+        self._long_rallies = []              # list of (start_frame, end_frame, crossings)
+
         # Learned court zone polygons in bird coords (updated every frame)
         self._zone_polys = {
             "backcourt_top": None,     # np.ndarray of shape (4,2)
@@ -466,6 +473,8 @@ class Analytics:
             a = self._kitchen_ema_alpha
             self._kitchen_y_min = (1 - a) * self._kitchen_y_min + a * y_min_new
             self._kitchen_y_max = (1 - a) * self._kitchen_y_max + a * y_max_new
+
+        self._net_y = (self._kitchen_y_min + self._kitchen_y_max) / 2.0
 
     def update_court_bounds_from_keypoints(self, proj_kpts):
         """
