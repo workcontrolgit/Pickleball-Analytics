@@ -84,9 +84,10 @@ CONNECTIONS: Tuple[Tuple[int, int], ...] = (
 # Video Processor
 # ==============================================================================
 class VideoProcessor:
-    def __init__(self, video_path: str, filters: dict):
+    def __init__(self, video_path: str, filters: dict, mode: str = 'full'):
         self.video_path = video_path
         self.filters = self._apply_default_filters(filters)
+        self.mode = mode
 
         self.ball_tracker = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
         self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
@@ -197,6 +198,39 @@ class VideoProcessor:
         if not writer.isOpened():
             raise RuntimeError("Failed to open VideoWriter")
         return out_path, writer
+
+    def _clip_long_rallies(self, total_frames: int, fps: int) -> None:
+        """Re-open source video and write a raw clip for each qualifying long rally."""
+        if not self.analytics._long_rallies:
+            return
+
+        buffer = fps * 2
+        cap = self._open_capture(self.video_path)
+
+        for idx, (start_frame, end_frame, crossings) in enumerate(self.analytics._long_rallies, start=1):
+            clip_start = max(0, start_frame - buffer)
+            clip_end = min(total_frames - 1, end_frame + buffer)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, clip_start)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            h, w = frame.shape[:2]
+            clip_path = os.path.join(self.output_dir, f"rally_{idx:02d}.mp4")
+            writer = cv2.VideoWriter(clip_path, FOURCC, fps, (w, h))
+            writer.write(frame)
+
+            for _ in range(clip_end - clip_start):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                writer.write(frame)
+
+            writer.release()
+            print(f"Saved rally clip: {clip_path} ({crossings} net crossings)")
+
+        cap.release()
 
     @staticmethod
     def _report_progress(cb, idx: int, total: int) -> None:
