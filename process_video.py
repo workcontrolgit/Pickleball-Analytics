@@ -123,6 +123,9 @@ class VideoProcessor:
                 ball_det = self.ball_tracker.detect_frame(frame)
                 ball_bbox, ball_proj = self.ball_tracker.process_and_project(ball_det, frame, Hmg)
 
+                # Update analytics geometry before rendering
+                self._update_analytics_geometry(kps, Hmg, src_w, src_h)
+
                 # Columns
                 main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
                 bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
@@ -256,11 +259,6 @@ class VideoProcessor:
             pts = np.array(keypoints, dtype=np.float32).reshape(-1, 1, 2)
             proj_kps = cv2.perspectiveTransform(pts, Hmg).reshape(-1, 2)
 
-            # Teach analytics dynamic zones based on projected keypoints
-            self.analytics.update_kitchen_from_keypoints(proj_kps)
-            self.analytics.update_court_bounds_from_keypoints(proj_kps)
-            self.analytics.update_zones_from_keypoints(proj_kps)
-
             for i, pt in enumerate(proj_kps):
                 x, y = map(int, pt)
                 if 0 <= x < src_w and 0 <= y < src_h:
@@ -285,6 +283,22 @@ class VideoProcessor:
 
         w, h = target_size
         return cv2.resize(bird, (w, h), interpolation=cv2.INTER_AREA)
+
+    def _update_analytics_geometry(
+        self,
+        keypoints: Optional[np.ndarray],
+        Hmg: Optional[np.ndarray],
+        src_w: int,
+        src_h: int,
+    ) -> None:
+        """Project keypoints and update analytics zone geometry. Called every frame regardless of mode."""
+        if keypoints is None or Hmg is None:
+            return
+        pts = np.array(keypoints, dtype=np.float32).reshape(-1, 1, 2)
+        proj_kps = cv2.perspectiveTransform(pts, Hmg).reshape(-1, 2)
+        self.analytics.update_kitchen_from_keypoints(proj_kps)
+        self.analytics.update_court_bounds_from_keypoints(proj_kps)
+        self.analytics.update_zones_from_keypoints(proj_kps)
 
     def _render_analytics_grid(
         self,
