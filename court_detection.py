@@ -77,7 +77,7 @@ class CourtDetector:
         results = self.model(frame, conf=0.9, device=self.device)
         keypoints = results[0].keypoints
 
-        if keypoints is None or keypoints.shape[1] != len(self.dst_pts):
+        if keypoints is None or len(keypoints) == 0 or keypoints.shape[1] != len(self.dst_pts):
             return None, None
 
         src_pts = keypoints.xy[0].cpu().numpy().astype(np.float32)
