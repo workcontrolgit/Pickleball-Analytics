@@ -104,11 +104,13 @@ class VideoProcessor:
         total_frames, src_w, src_h, fps = self._read_video_meta(cap)
         out_w, out_h, main_w, be_w, grid_w, panel_w, panel_h = self._compute_layout(src_w, src_h)
 
-        # Init analytics context
         self.analytics.set_canvas_size(src_w, src_h)
         self.analytics.set_video_context(total_frames=total_frames, fps=fps)
 
-        out_path, writer = self._create_writer(out_w, out_h, fps)
+        writer = None
+        out_path = None
+        if self.mode != 'rallies_only':
+            out_path, writer = self._create_writer(out_w, out_h, fps)
 
         frame_idx = 0
         try:
@@ -117,37 +119,38 @@ class VideoProcessor:
                 if not ret:
                     break
 
-                # --- Detection & projection (single pass) ---
                 kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
                 players, proj_players = self.player_tracker.detect_and_project(frame, Hmg)
-
                 ball_det = self.ball_tracker.detect_frame(frame)
                 ball_bbox, ball_proj = self.ball_tracker.process_and_project(ball_det, frame, Hmg)
 
-                # Update analytics geometry before rendering
                 self._update_analytics_geometry(kps, Hmg, src_w, src_h)
-
-                # Columns
-                main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
-                bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
-
-                # Analytics update + panels
                 self.analytics.update_counters(frame_idx, proj_players, ball_proj)
-                grid_col = self._render_analytics_grid((panel_w, panel_h), (grid_w, out_h), bird_reference=bird_col)
 
-                # Compose & write
-                composite = cv2.hconcat([main_col, bird_col, grid_col])
-                writer.write(composite)
+                if self.mode != 'rallies_only':
+                    main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
+                    bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
+                    grid_col = self._render_analytics_grid((panel_w, panel_h), (grid_w, out_h), bird_reference=bird_col)
+                    composite = cv2.hconcat([main_col, bird_col, grid_col])
+                    writer.write(composite)
 
                 frame_idx += 1
                 self._report_progress(progress_callback, frame_idx, total_frames)
         finally:
             cap.release()
-            writer.release()
+            if writer:
+                writer.release()
+            # Finalize any rally still active at video end
+            if self.analytics._rally_active:
+                self.analytics._finalize_current_rally(frame_idx=frame_idx)
             self.analytics.save_outputs()
             self._report_progress(progress_callback, total_frames, total_frames)
 
-        print(f"Saved: {out_path}")
+        if self.mode in ('rallies_only', 'full_and_rallies'):
+            self._clip_long_rallies(total_frames, fps)
+
+        if out_path:
+            print(f"Saved: {out_path}")
         return out_path
 
     # ------------------------------------------------------------------
