@@ -3,28 +3,24 @@ Tkinter desktop UI (customtkinter) for the video analytics pipeline
 
 Purpose
 -------
-Provides a minimal GUI to pick a video, launch processing on a background thread,
-show progress, and display always-on analytics badges.
+Provides a modern, sporty card-based GUI to pick a video, configure processing
+mode, launch processing on a background thread, show progress, and display
+analytics results.
 
 What it does
 ------------
-- Select video (file dialog) → enables “Process Video”
+- Select video (file dialog) → enables mode selector and "Process Video"
 - Spawns VideoProcessor(video_path, filters) on a thread; wires a progress callback
-- Updates a progress bar and status label (orange → green/red)
-- Shows non-interactive badges for the four core analytics included in the composite
+- Updates a progress bar and status label
+- Shows analytics badges and a results card with rally count and output path
 
 Primary entry point
 -------------------
 - App.process_video(): prepares always-true filters and calls VideoProcessor.process_video()
 - __main__: launches the Tkinter event loop
-
-Assumptions
------------
-- The core analytics are “always on” and also enforced in the processing layer
-- process_video.py (VideoProcessor) is on the Python path
 """
 
-
+import os
 import customtkinter as ctk
 from tkinter import filedialog
 from process_video import VideoProcessor
@@ -33,130 +29,402 @@ import threading
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
+# ── Palette ──────────────────────────────────────────────────────────────────
+BG          = "#0F1117"
+CARD_BG     = "#1A1D27"
+CARD_BORDER = "#2A2D3A"
+CTA         = "#00D4FF"
+RALLY_STAT  = "#FF6B35"
+SUCCESS     = "#00C49A"
+ERROR       = "#FF4757"
+BODY_TEXT   = "#E0E0E0"
+MUTED_TEXT  = "#6B7280"
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Pickleball Computer Vision Project")
-        self.geometry("1200x500")
+        self.title("Pickleball Analytics")
+        self.geometry("900x600")
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+
         self.video_path = None
+        self.out_dir = None
+        self.mode_var = ctk.StringVar(value="Full Analytics")
+        self._reveal_id = None
 
-        # these vars are kept for compatibility, but not shown as toggles
-        self.playerHeatmap_var = ctk.BooleanVar(value=True)
-        self.rallyLength_var = ctk.BooleanVar(value=True)
-        self.ballHeatmap_var = ctk.BooleanVar(value=True)
-        self.kitchenIntrusion_var = ctk.BooleanVar(value=True)
+        self._build_ui()
+        self._set_state_idle()
 
-        self.create_widgets()
+    # ── UI construction ───────────────────────────────────────────────────────
 
-    def create_widgets(self):
-        self.grid_columnconfigure(0, weight=2, uniform="a")
-        self.grid_columnconfigure(1, weight=1, uniform="a")
-        self.grid_rowconfigure((0, 1, 2), weight=1)
+    def _build_ui(self):
+        # Three rows: header / cards / footer
+        self.grid_rowconfigure(0, weight=0, minsize=50)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=0, minsize=60)
+        self.grid_columnconfigure(0, weight=1)
 
-        # LEFT — controls & status
-        left_frame = ctk.CTkFrame(self, corner_radius=10)
-        left_frame.grid(row=0, column=0, rowspan=3, padx=20, pady=20, sticky="nsew")
-        left_frame.grid_columnconfigure(0, weight=1)
+        self._build_header()
+        self._build_card_area()
+        self._build_footer()
 
-        self.select_btn = ctk.CTkButton(left_frame, text="Select Video", command=self.select_video)
-        self.select_btn.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
-
-        self.process_btn = ctk.CTkButton(left_frame, text="Process Video", command=self.process_video_thread, state="disabled")
-        self.process_btn.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-
-        # Status
-        status_frame = ctk.CTkFrame(left_frame, corner_radius=10, fg_color="#2a2d2e")
-        status_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="nsew")
-        status_frame.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(status_frame, text="Status:", font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=0, column=0, padx=10, pady=(10, 5), sticky="w"
-        )
-        self.status_label = ctk.CTkLabel(
-            status_frame, text="Video not selected", text_color="red", font=ctk.CTkFont(size=13)
-        )
-        self.status_label.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
-
-        # Progress bar
-        self.progress_bar = ctk.CTkProgressBar(status_frame)
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="ew")
-
-        # RIGHT — Analytics badges (always on)
-        right = ctk.CTkFrame(self, corner_radius=10)
-        right.grid(row=0, column=1, rowspan=3, padx=20, pady=20, sticky="nsew")
-        right.grid_columnconfigure(0, weight=1)
+    # Zone 1 — Header Strip
+    def _build_header(self):
+        header = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, height=50)
+        header.grid(row=0, column=0, sticky="ew", padx=20)
+        header.grid_propagate(False)
+        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
 
         ctk.CTkLabel(
-            right, text="Analytics (Always Included)", font=ctk.CTkFont(size=16, weight="bold")
-        ).grid(row=0, column=0, padx=10, pady=(20, 6), sticky="w")
+            header,
+            text="Pickleball Analytics",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="white",
+        ).grid(row=0, column=0, sticky="w", pady=10)
 
-        ctk.CTkLabel(
-            right,
-            text="These analytics are baked into the main composite.\nFuture analytics may export as separate videos.",
+        # Filename chip (hidden until file selected)
+        self.chip_frame = ctk.CTkFrame(
+            header, fg_color=CARD_BORDER, corner_radius=12, height=28
+        )
+        self.chip_label = ctk.CTkLabel(
+            self.chip_frame,
+            text="",
             font=ctk.CTkFont(size=12),
-            text_color="#A0A0A0",
+            text_color="white",
+        )
+        self.chip_label.pack(padx=12, pady=4)
+        # Initially hidden
+        self.chip_frame.grid(row=0, column=1, sticky="e", pady=10)
+        self.chip_frame.grid_remove()
+
+    # Zone 2 — Main Card Area (2×2 grid)
+    def _build_card_area(self):
+        area = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        area.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 10))
+        area.grid_columnconfigure(0, weight=1)
+        area.grid_columnconfigure(1, weight=1)
+        area.grid_rowconfigure(0, weight=1)
+        area.grid_rowconfigure(1, weight=1)
+
+        self._build_file_card(area)
+        self._build_mode_card(area)
+        self._build_badges_card(area)
+        self._build_results_card(area)
+
+    def _make_card(self, parent, row, col, **kwargs):
+        defaults = dict(
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=12,
+        )
+        defaults.update(kwargs)
+        card = ctk.CTkFrame(parent, **defaults)
+        card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+        return card
+
+    # File Card
+    def _build_file_card(self, parent):
+        card = self._make_card(parent, 0, 0)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(0, weight=1)
+        card.grid_rowconfigure(1, weight=0)
+
+        self.drop_label = ctk.CTkLabel(
+            card,
+            text="Drop or browse for\na video file",
+            font=ctk.CTkFont(size=14),
+            text_color=MUTED_TEXT,
+            justify="center",
+        )
+        self.drop_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+
+        self.browse_btn = ctk.CTkButton(
+            card,
+            text="Browse Video",
+            fg_color=CTA,
+            text_color="black",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=8,
+            command=self.select_video,
+        )
+        self.browse_btn.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+
+    # Mode Card
+    def _build_mode_card(self, parent):
+        card = self._make_card(parent, 0, 1)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(0, weight=0)
+        card.grid_rowconfigure(1, weight=1)
+        card.grid_rowconfigure(2, weight=0)
+
+        ctk.CTkLabel(
+            card,
+            text="Processing Mode",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=BODY_TEXT,
+        ).grid(row=0, column=0, padx=16, pady=(16, 6), sticky="w")
+
+        self.mode_selector = ctk.CTkSegmentedButton(
+            card,
+            values=["Full Analytics", "Rallies Only", "Full + Rallies"],
+            variable=self.mode_var,
+            state="disabled",
+            selected_color=CTA,
+            selected_hover_color="#00B8D9",
+            unselected_color=CARD_BORDER,
+            font=ctk.CTkFont(size=12),
+        )
+        self.mode_selector.grid(row=1, column=0, padx=16, pady=8, sticky="ew")
+
+        self.process_btn = ctk.CTkButton(
+            card,
+            text="Process Video",
+            fg_color=CTA,
+            text_color="black",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=8,
+            state="disabled",
+            command=self.process_video_thread,
+        )
+        self.process_btn.grid(row=2, column=0, padx=16, pady=(0, 16), sticky="ew")
+
+    # Analytics Badges Card
+    def _build_badges_card(self, parent):
+        card = self._make_card(parent, 1, 0)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_columnconfigure(1, weight=1)
+        card.grid_rowconfigure(0, weight=0)
+        card.grid_rowconfigure(1, weight=1)
+        card.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            card,
+            text="Analytics (Always Included)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=BODY_TEXT,
+        ).grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 8), sticky="w")
+
+        badge_data = [
+            ("Player Heatmap", "#155E75", 1, 0),
+            ("Ball Heatmap",   "#4F46E5", 1, 1),
+            ("Kitchen Detection", "#B45309", 2, 0),
+            ("Rally Length",   "#7C3AED", 2, 1),
+        ]
+        for text, color, row, col in badge_data:
+            pill = ctk.CTkFrame(card, fg_color=color, corner_radius=14)
+            pill.grid(row=row, column=col, padx=10, pady=8, sticky="ew")
+            ctk.CTkLabel(
+                pill,
+                text=text,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="white",
+            ).pack(padx=10, pady=7)
+
+    # Results Card
+    def _build_results_card(self, parent):
+        self.results_card = self._make_card(parent, 1, 1, height=0)
+        self.results_card.grid_propagate(False)
+        self.results_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self.results_card,
+            text="Results",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=BODY_TEXT,
+        ).grid(row=0, column=0, padx=16, pady=(12, 4), sticky="w")
+
+        # Rally count badge
+        self.rally_badge_frame = ctk.CTkFrame(
+            self.results_card, fg_color=RALLY_STAT, corner_radius=12
+        )
+        self.rally_badge_label = ctk.CTkLabel(
+            self.rally_badge_frame,
+            text="",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="white",
+        )
+        self.rally_badge_label.pack(padx=12, pady=6)
+        self.rally_badge_frame.grid(row=1, column=0, padx=16, pady=4, sticky="w")
+
+        # Output path
+        self.output_path_label = ctk.CTkLabel(
+            self.results_card,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color=MUTED_TEXT,
+            wraplength=300,
             justify="left",
-        ).grid(row=1, column=0, padx=10, pady=(0, 16), sticky="w")
+        )
+        self.output_path_label.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="w")
 
-        # badge helper
-        def badge(parent, text, color):
-            # small rounded pill with text
-            pill = ctk.CTkFrame(parent, fg_color=color, corner_radius=14)
-            lbl = ctk.CTkLabel(pill, text=text, font=ctk.CTkFont(size=12, weight="bold"))
-            lbl.pack(padx=10, pady=6)
-            return pill
+        # Open folder button
+        self.open_folder_btn = ctk.CTkButton(
+            self.results_card,
+            text="📂 Open Folder",
+            fg_color=CARD_BORDER,
+            text_color=BODY_TEXT,
+            font=ctk.CTkFont(size=12),
+            corner_radius=8,
+            command=self._open_output_folder,
+        )
+        self.open_folder_btn.grid(row=3, column=0, padx=16, pady=(0, 12), sticky="w")
 
-        # badges grid
-        badges_frame = ctk.CTkFrame(right, corner_radius=10, fg_color="#232527")
-        badges_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="nsew")
-        badges_frame.grid_columnconfigure((0, 1), weight=1)
+    # Zone 3 — Footer
+    def _build_footer(self):
+        footer = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, height=60)
+        footer.grid(row=2, column=0, sticky="ew", padx=20)
+        footer.grid_propagate(False)
+        footer.grid_columnconfigure(0, weight=1)
 
-        b1 = badge(badges_frame, "Player Heatmap", "#155E75")       # teal-ish
-        b2 = badge(badges_frame, "Ball Heatmap", "#4F46E5")         # indigo
-        b3 = badge(badges_frame, "Kitchen Detection", "#B45309")    # amber-ish
-        b4 = badge(badges_frame, "Rally Length", "#7C3AED")     # purple
+        self.progress_bar = ctk.CTkProgressBar(
+            footer,
+            fg_color=CARD_BORDER,
+            progress_color=CTA,
+            height=8,
+            corner_radius=4,
+        )
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=0, column=0, sticky="ew", pady=(8, 2))
 
-        b1.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        b2.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        b3.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-        b4.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+        self.status_label = ctk.CTkLabel(
+            footer,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED_TEXT,
+            justify="left",
+            anchor="w",
+        )
+        self.status_label.grid(row=1, column=0, sticky="w")
+
+    # ── State machine ─────────────────────────────────────────────────────────
+
+    def _set_state_idle(self):
+        self.mode_selector.configure(state="disabled")
+        self.process_btn.configure(state="disabled")
+        self.chip_frame.grid_remove()
+        self.progress_bar.set(0)
+        self.status_label.configure(
+            text="Select a video to begin", text_color=MUTED_TEXT
+        )
+
+    def _set_state_file_selected(self):
+        filename = os.path.basename(self.video_path)
+        self.chip_label.configure(text=filename)
+        self.chip_frame.grid()
+        self.mode_selector.configure(state="normal")
+        self.process_btn.configure(state="normal")
+        self.status_label.configure(text="Ready to process", text_color=BODY_TEXT)
+
+    def _set_state_processing(self):
+        self.browse_btn.configure(state="disabled")
+        self.mode_selector.configure(state="disabled")
+        self.process_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        self.status_label.configure(text="Analyzing\u2026", text_color=MUTED_TEXT)
+
+    def _set_state_complete(self, rally_count, out_dir, mode):
+        self.browse_btn.configure(state="normal")
+        self.mode_selector.configure(state="normal")
+        self.process_btn.configure(state="normal")
+        self.progress_bar.set(1.0)
+        self.status_label.configure(text="Done!", text_color=SUCCESS)
+
+        # Populate results card
+        if mode in ("rallies_only", "full_and_rallies"):
+            badge_text = (
+                f"{rally_count} long {'rally' if rally_count == 1 else 'rallies'}"
+                if rally_count > 0
+                else "No long rallies detected"
+            )
+        else:
+            badge_text = "Processing complete"
+        self.rally_badge_label.configure(text=badge_text)
+        self.output_path_label.configure(text=out_dir)
+        self.out_dir = out_dir
+
+        self._reveal_results()
+
+    def _set_state_error(self, error_msg):
+        self.browse_btn.configure(state="normal")
+        self.mode_selector.configure(state="normal")
+        self.process_btn.configure(state="normal")
+        self.status_label.configure(
+            text=f"Error: {error_msg}", text_color=ERROR
+        )
+
+    # ── Results card reveal animation ─────────────────────────────────────────
+
+    def _reveal_results(self, step=0):
+        target = 90
+        increment = 10
+        delay = 30
+        current = step * increment
+        if current <= target:
+            self.results_card.configure(height=current)
+            self._reveal_id = self.after(delay, lambda: self._reveal_results(step + 1))
+        else:
+            self._reveal_id = None
+
+    # ── Actions ───────────────────────────────────────────────────────────────
 
     def select_video(self):
         filetypes = (("MP4 files", "*.mp4"), ("All files", "*.*"))
-        self.video_path = filedialog.askopenfilename(title="Open video file", filetypes=filetypes)
-        if self.video_path:
-            self.status_label.configure(text="Video selected", text_color="green")
-            self.process_btn.configure(state="normal")
-        else:
-            self.status_label.configure(text="Video not selected", text_color="red")
+        path = filedialog.askopenfilename(
+            title="Open video file", filetypes=filetypes
+        )
+        if path:
+            self.video_path = path
+            if self._reveal_id is not None:
+                self.after_cancel(self._reveal_id)
+                self._reveal_id = None
+            self.results_card.configure(height=0)
+            self._set_state_file_selected()
 
     def process_video_thread(self):
-        threading.Thread(target=self.process_video, daemon=True).start()
+        self._set_state_processing()
+        mode = self.mode_var.get()
+        threading.Thread(target=self._process_video, args=(mode,), daemon=True).start()
 
-    def process_video(self):
-        self.process_btn.configure(state="disabled")
-        self.status_label.configure(text="Processing video...", text_color="orange")
-        self.progress_bar.set(0)
-
-        # These are always True and reinforced in process_video.py too
+    def _process_video(self, mode_label):
         filters = {
             "player_heatmap": True,
             "rally_length": True,
             "ball_heatmap": True,
             "kitchen_detection": True,
         }
+
         def update_progress(value):
             self.after(0, lambda: self.progress_bar.set(value))
+
         try:
-            processor = VideoProcessor(self.video_path, filters)
+            mode_map = {
+                "Full Analytics": "full",
+                "Rallies Only": "rallies_only",
+                "Full + Rallies": "full_and_rallies",
+            }
+            mode = mode_map[mode_label]
+            processor = VideoProcessor(self.video_path, filters, mode=mode)
             processor.process_video(progress_callback=update_progress)
-            self.status_label.configure(text="Processing completed!", text_color="green")
+
+            rally_count = len(processor.analytics._long_rallies)
+            out_dir = processor.output_dir
+
+            self.after(
+                0, lambda: self._set_state_complete(rally_count, out_dir, mode)
+            )
         except Exception as e:
-            self.status_label.configure(text=f"Error: {str(e)}", text_color="red")
-            print(f"Error: {str(e)}")
-        finally:
-            self.process_btn.configure(state="normal")
+            err = str(e)
+            print(f"Error: {err}")
+            self.after(0, lambda: self._set_state_error(err))
+
+    def _open_output_folder(self):
+        if self.out_dir and os.path.isdir(self.out_dir):
+            os.startfile(self.out_dir)
+
 
 if __name__ == "__main__":
     app = App()

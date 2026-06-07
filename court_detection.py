@@ -35,10 +35,12 @@ Assumptions
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import torch
 
 class CourtDetector:
     def __init__(self, model_path, homography_size = (400,900)):
         self.model = YOLO(model_path)
+        self.device = 0 if torch.cuda.is_available() else "cpu"
         self.birdseye_size = homography_size
         self.dst_pts = self.get_reference_points()
         self.connect_pairs = self.get_connect_pairs()
@@ -72,10 +74,10 @@ class CourtDetector:
 
     def get_keypoints_and_homography(self, frame):
         """Detects court keypoints and computes the homography matrix"""
-        results = self.model(frame, conf=0.9)
+        results = self.model(frame, conf=0.9, device=self.device)
         keypoints = results[0].keypoints
 
-        if keypoints is None or keypoints.shape[1] != len(self.dst_pts):
+        if keypoints is None or len(keypoints) == 0 or keypoints.shape[1] != len(self.dst_pts):
             return None, None
 
         src_pts = keypoints.xy[0].cpu().numpy().astype(np.float32)

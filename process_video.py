@@ -24,6 +24,8 @@ from typing import Iterable, Optional, Tuple
 import cv2
 import numpy as np
 
+from loguru import logger
+
 from ball_tracker import BallTracker
 from player_tracker import PlayerTracker
 from court_detection import CourtDetector
@@ -81,12 +83,22 @@ CONNECTIONS: Tuple[Tuple[int, int], ...] = (
 
 
 # ==============================================================================
+# Logging
+# ==============================================================================
+def setup_logger(run_dir: str) -> None:
+    logger.remove()  # Remove default stderr sink
+    log_path = os.path.join(run_dir, "run.log")
+    logger.add(log_path, serialize=True, level="DEBUG", enqueue=True)
+
+
+# ==============================================================================
 # Video Processor
 # ==============================================================================
 class VideoProcessor:
-    def __init__(self, video_path: str, filters: dict):
+    def __init__(self, video_path: str, filters: dict, mode: str = 'full'):
         self.video_path = video_path
         self.filters = self._apply_default_filters(filters)
+        self.mode = mode
 
         self.ball_tracker = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
         self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
@@ -94,6 +106,9 @@ class VideoProcessor:
         self.analytics = Analytics(self.filters)
 
         self.output_dir = self._make_output_dir()
+        setup_logger(self.output_dir)
+        self._start_time = time.time()
+        logger.bind(video_path=self.video_path, mode=self.mode).info("run_started")
 
     # ------------------------------------------------------------------
     # Public API
@@ -103,11 +118,13 @@ class VideoProcessor:
         total_frames, src_w, src_h, fps = self._read_video_meta(cap)
         out_w, out_h, main_w, be_w, grid_w, panel_w, panel_h = self._compute_layout(src_w, src_h)
 
-        # Init analytics context
         self.analytics.set_canvas_size(src_w, src_h)
         self.analytics.set_video_context(total_frames=total_frames, fps=fps)
 
-        out_path, writer = self._create_writer(out_w, out_h, fps)
+        writer = None
+        out_path = None
+        if self.mode != 'rallies_only':
+            out_path, writer = self._create_writer(out_w, out_h, fps)
 
         frame_idx = 0
         try:
@@ -116,34 +133,45 @@ class VideoProcessor:
                 if not ret:
                     break
 
-                # --- Detection & projection (single pass) ---
                 kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
+                if frame_idx == 0:
+                    logger.bind(frame_idx=frame_idx, homography_valid=Hmg is not None).info("court_detected")
                 players, proj_players = self.player_tracker.detect_and_project(frame, Hmg)
-
                 ball_det = self.ball_tracker.detect_frame(frame)
                 ball_bbox, ball_proj = self.ball_tracker.process_and_project(ball_det, frame, Hmg)
 
-                # Columns
-                main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
-                bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
-
-                # Analytics update + panels
+                self._update_analytics_geometry(kps, Hmg, src_w, src_h)
                 self.analytics.update_counters(frame_idx, proj_players, ball_proj)
-                grid_col = self._render_analytics_grid((panel_w, panel_h), (grid_w, out_h), bird_reference=bird_col)
 
-                # Compose & write
-                composite = cv2.hconcat([main_col, bird_col, grid_col])
-                writer.write(composite)
+                if self.mode != 'rallies_only':
+                    main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
+                    bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
+                    grid_col = self._render_analytics_grid((panel_w, panel_h), (grid_w, out_h), bird_reference=bird_col)
+                    composite = cv2.hconcat([main_col, bird_col, grid_col])
+                    writer.write(composite)
 
                 frame_idx += 1
+                if frame_idx % 500 == 0 and total_frames > 0:
+                    logger.bind(frame_idx=frame_idx, total_frames=total_frames, progress_pct=round(frame_idx / total_frames * 100, 1)).debug("frame_milestone")
                 self._report_progress(progress_callback, frame_idx, total_frames)
         finally:
             cap.release()
-            writer.release()
+            if writer:
+                writer.release()
+            # Finalize any rally still active at video end
+            if self.analytics._rally_active:
+                self.analytics._finalize_current_rally(frame_idx=frame_idx)
             self.analytics.save_outputs()
+            rally_count = len(self.analytics._long_rallies)
+            elapsed_s = round(time.time() - self._start_time, 2)
+            logger.bind(total_frames=total_frames, rally_count=rally_count, elapsed_s=elapsed_s).info("run_completed")
             self._report_progress(progress_callback, total_frames, total_frames)
 
-        print(f"Saved: {out_path}")
+        if self.mode in ('rallies_only', 'full_and_rallies'):
+            self._clip_long_rallies(total_frames, fps)
+
+        if out_path:
+            print(f"Saved: {out_path}")
         return out_path
 
     # ------------------------------------------------------------------
@@ -194,6 +222,45 @@ class VideoProcessor:
         if not writer.isOpened():
             raise RuntimeError("Failed to open VideoWriter")
         return out_path, writer
+
+    def _clip_long_rallies(self, total_frames: int, fps: int) -> None:
+        """Re-open source video and write a raw clip for each qualifying long rally."""
+        if not self.analytics._long_rallies:
+            return
+
+        buffer = fps * 2
+        cap = self._open_capture(self.video_path)
+
+        for idx, (start_frame, end_frame, crossings) in enumerate(self.analytics._long_rallies, start=1):
+            logger.bind(start_frame=start_frame, end_frame=end_frame, crossing_count=crossings).debug("rally_candidate")
+            clip_start = max(0, start_frame - buffer)
+            clip_end = min(total_frames - 1, end_frame + buffer)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, clip_start)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            h, w = frame.shape[:2]
+            clip_path = os.path.join(self.output_dir, f"rally_{idx:02d}.mp4")
+            try:
+                writer = cv2.VideoWriter(clip_path, FOURCC, fps, (w, h))
+                writer.write(frame)
+
+                for _ in range(clip_end - clip_start):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    writer.write(frame)
+
+                writer.release()
+                print(f"Saved rally clip: {clip_path} ({crossings} net crossings)")
+                duration_s = round((clip_end - clip_start) / fps, 1)
+                logger.bind(rally_num=idx, clip_path=str(clip_path), duration_s=duration_s, crossing_count=crossings).info("rally_clip_saved")
+            except Exception:
+                logger.exception(f"Failed to write rally clip {idx}")
+
+        cap.release()
 
     @staticmethod
     def _report_progress(cb, idx: int, total: int) -> None:
@@ -256,11 +323,6 @@ class VideoProcessor:
             pts = np.array(keypoints, dtype=np.float32).reshape(-1, 1, 2)
             proj_kps = cv2.perspectiveTransform(pts, Hmg).reshape(-1, 2)
 
-            # Teach analytics dynamic zones based on projected keypoints
-            self.analytics.update_kitchen_from_keypoints(proj_kps)
-            self.analytics.update_court_bounds_from_keypoints(proj_kps)
-            self.analytics.update_zones_from_keypoints(proj_kps)
-
             for i, pt in enumerate(proj_kps):
                 x, y = map(int, pt)
                 if 0 <= x < src_w and 0 <= y < src_h:
@@ -285,6 +347,22 @@ class VideoProcessor:
 
         w, h = target_size
         return cv2.resize(bird, (w, h), interpolation=cv2.INTER_AREA)
+
+    def _update_analytics_geometry(
+        self,
+        keypoints: Optional[np.ndarray],
+        Hmg: Optional[np.ndarray],
+        src_w: int,
+        src_h: int,
+    ) -> None:
+        """Project keypoints and update analytics zone geometry. Called every frame regardless of mode."""
+        if keypoints is None or Hmg is None:
+            return
+        pts = np.array(keypoints, dtype=np.float32).reshape(-1, 1, 2)
+        proj_kps = cv2.perspectiveTransform(pts, Hmg).reshape(-1, 2)
+        self.analytics.update_kitchen_from_keypoints(proj_kps)
+        self.analytics.update_court_bounds_from_keypoints(proj_kps)
+        self.analytics.update_zones_from_keypoints(proj_kps)
 
     def _render_analytics_grid(
         self,

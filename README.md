@@ -47,15 +47,32 @@ Analytics dashboard (2×2 grid)
 Clone repository
 ```
 git clone URL
+cd Pickleball-Analytics
 ```
 
-Install depenedencies:
+Windows setup:
 ```
-pip install -r requirements.txt
+uv python install 3.12
+uv venv --python 3.12 .venv
+.\.venv\Scripts\python.exe -m ensurepip --upgrade
+.\.venv\Scripts\python.exe -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt
 ```
+
+Notes:
+- Use Python 3.12 for this project.
+- The PyTorch dependencies in `requirements.txt` require the PyTorch CUDA 12.8 wheel index shown above.
+
 ## Usage
-Run via GUI
+Run via GUI on Windows
 ```
+.\.venv\Scripts\Activate.ps1
+python main.py
+```
+
+If PowerShell blocks activation:
+```
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
 python main.py
 ```
 
