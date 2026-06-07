@@ -24,6 +24,8 @@ from typing import Iterable, Optional, Tuple
 import cv2
 import numpy as np
 
+from loguru import logger
+
 from ball_tracker import BallTracker
 from player_tracker import PlayerTracker
 from court_detection import CourtDetector
@@ -81,6 +83,15 @@ CONNECTIONS: Tuple[Tuple[int, int], ...] = (
 
 
 # ==============================================================================
+# Logging
+# ==============================================================================
+def setup_logger(run_dir: str) -> None:
+    logger.remove()  # Remove default stderr sink
+    log_path = os.path.join(run_dir, "run.log")
+    logger.add(log_path, serialize=True, level="DEBUG", enqueue=True)
+
+
+# ==============================================================================
 # Video Processor
 # ==============================================================================
 class VideoProcessor:
@@ -95,6 +106,9 @@ class VideoProcessor:
         self.analytics = Analytics(self.filters)
 
         self.output_dir = self._make_output_dir()
+        setup_logger(self.output_dir)
+        self._start_time = time.time()
+        logger.bind(video_path=self.video_path, mode=self.mode).info("run_started")
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,6 +134,8 @@ class VideoProcessor:
                     break
 
                 kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
+                if frame_idx == 0:
+                    logger.bind(frame_idx=frame_idx, homography_valid=Hmg is not None).info("court_detected")
                 players, proj_players = self.player_tracker.detect_and_project(frame, Hmg)
                 ball_det = self.ball_tracker.detect_frame(frame)
                 ball_bbox, ball_proj = self.ball_tracker.process_and_project(ball_det, frame, Hmg)
@@ -135,6 +151,8 @@ class VideoProcessor:
                     writer.write(composite)
 
                 frame_idx += 1
+                if frame_idx % 500 == 0 and total_frames > 0:
+                    logger.bind(frame_idx=frame_idx, total_frames=total_frames, progress_pct=round(frame_idx / total_frames * 100, 1)).debug("frame_milestone")
                 self._report_progress(progress_callback, frame_idx, total_frames)
         finally:
             cap.release()
@@ -144,6 +162,9 @@ class VideoProcessor:
             if self.analytics._rally_active:
                 self.analytics._finalize_current_rally(frame_idx=frame_idx)
             self.analytics.save_outputs()
+            rally_count = len(self.analytics._long_rallies)
+            elapsed_s = round(time.time() - self._start_time, 2)
+            logger.bind(total_frames=total_frames, rally_count=rally_count, elapsed_s=elapsed_s).info("run_completed")
             self._report_progress(progress_callback, total_frames, total_frames)
 
         if self.mode in ('rallies_only', 'full_and_rallies'):
@@ -211,6 +232,7 @@ class VideoProcessor:
         cap = self._open_capture(self.video_path)
 
         for idx, (start_frame, end_frame, crossings) in enumerate(self.analytics._long_rallies, start=1):
+            logger.bind(start_frame=start_frame, end_frame=end_frame, crossing_count=crossings).debug("rally_candidate")
             clip_start = max(0, start_frame - buffer)
             clip_end = min(total_frames - 1, end_frame + buffer)
 
@@ -221,17 +243,22 @@ class VideoProcessor:
 
             h, w = frame.shape[:2]
             clip_path = os.path.join(self.output_dir, f"rally_{idx:02d}.mp4")
-            writer = cv2.VideoWriter(clip_path, FOURCC, fps, (w, h))
-            writer.write(frame)
-
-            for _ in range(clip_end - clip_start):
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            try:
+                writer = cv2.VideoWriter(clip_path, FOURCC, fps, (w, h))
                 writer.write(frame)
 
-            writer.release()
-            print(f"Saved rally clip: {clip_path} ({crossings} net crossings)")
+                for _ in range(clip_end - clip_start):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    writer.write(frame)
+
+                writer.release()
+                print(f"Saved rally clip: {clip_path} ({crossings} net crossings)")
+                duration_s = round((clip_end - clip_start) / fps, 1)
+                logger.bind(rally_num=idx, clip_path=str(clip_path), duration_s=duration_s, crossing_count=crossings).info("rally_clip_saved")
+            except Exception:
+                logger.exception(f"Failed to write rally clip {idx}")
 
         cap.release()
 
