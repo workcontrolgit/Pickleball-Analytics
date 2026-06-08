@@ -366,6 +366,58 @@ class Analytics:
 
         return img
 
+    def panel_serve_summary(self, results: list, size: tuple) -> np.ndarray:
+        """
+        Render a serve summary panel.
+        results: list of ServeResult objects
+        size: (width, height)
+        """
+        w, h = size
+        panel = np.zeros((h, w, 3), dtype=np.uint8)
+        panel[:] = (20, 20, 20)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(panel, "SERVE ANALYSIS", (10, 25), font, 0.55, (255, 255, 255), 1)
+
+        if not results:
+            cv2.putText(panel, "No serves detected", (10, 60), font, 0.45, (160, 160, 160), 1)
+            return panel
+
+        # Group by player
+        from collections import Counter
+        by_player: dict = defaultdict(list)
+        for r in results:
+            key = f"P{r.player_id}" if r.player_id is not None else "P?"
+            by_player[key].append(r)
+
+        y = 50
+        for player_label, serves in sorted(by_player.items()):
+            avg_score = round(sum(s.score for s in serves) / len(serves), 1)
+
+            # Find most common fault (any field with non-"good" / non-"deep" value)
+            faults = []
+            for s in serves:
+                for field in ("stance", "ball_toss", "contact_point", "follow_through"):
+                    val = getattr(s, field)
+                    if val not in ("good", "unknown"):
+                        faults.append(f"{field}:{val}")
+            common_fault = Counter(faults).most_common(1)
+            fault_str = common_fault[0][0].replace("_", " ") if common_fault else "none"
+
+            # Score bar (green)
+            bar_w = int((avg_score / 10) * (w - 20))
+            cv2.rectangle(panel, (10, y + 18), (10 + bar_w, y + 28), (0, 200, 80), -1)
+
+            cv2.putText(panel, f"{player_label}  {len(serves)} serves  avg:{avg_score}/10",
+                        (10, y + 14), font, 0.42, (200, 255, 200), 1)
+            cv2.putText(panel, f"  fault: {fault_str}",
+                        (10, y + 42), font, 0.38, (180, 180, 180), 1)
+            y += 60
+            if y > h - 20:
+                break
+
+        return panel
+
     # ---------- helpers ----------
     def _render_heatmap_panel(self, accum, panel_size, title, bird_reference=None, alpha=0.55):
         w, h = panel_size
