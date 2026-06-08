@@ -190,6 +190,10 @@ class Analytics:
         # --- Rally state update ---
         self._elapsed_frames += 1
 
+        # Fallback court bounds if court was never detected
+        if self._court_bounds is None and self.canvas_w and self.canvas_h:
+            self._court_bounds = (0.0, 0.0, float(self.canvas_w), float(self.canvas_h))
+
         in_play = self._ball_in_bounds(ball_proj)
         if in_play:
             # Set start frame on first active frame of this rally
@@ -202,7 +206,9 @@ class Analytics:
             self._rally_frames += 1
             self._gap_frames = 0
 
-            # Net crossing detection
+            # Net crossing detection — use fallback if court was never detected
+            if self._net_y is None and self.canvas_h:
+                self._net_y = self.canvas_h * 0.5
             if self._net_y is not None and ball_proj is not None:
                 current_side = 'above' if ball_proj[1] < self._net_y else 'below'
                 if self._ball_last_side is not None and current_side != self._ball_last_side:

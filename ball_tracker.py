@@ -92,6 +92,8 @@ class BallTracker:
             self.draw_bbox(frame, bbox)
             if H is not None:
                 proj = self.project_ball(bbox, H)
-                return bbox, proj
-            return bbox, None
+            else:
+                x1, y1, x2, y2 = bbox
+                proj = ((x1 + x2) / 2, (y1 + y2) / 2)
+            return bbox, proj
         return None, None
