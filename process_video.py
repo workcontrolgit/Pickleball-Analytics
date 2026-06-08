@@ -30,6 +30,8 @@ from ball_tracker import BallTracker
 from player_tracker import PlayerTracker
 from court_detection import CourtDetector
 from analytics import Analytics
+from serve_detector import ServeDetector
+from serve_analyzer import OllamaServeAnalyzer
 
 # ==============================================================================
 # Module‑level constants (easy to tweak and reuse)
@@ -104,6 +106,8 @@ class VideoProcessor:
         self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
         self.court_mapper = CourtDetector(os.path.join(MODELS_DIR, "court_detection.pt"))
         self.analytics = Analytics(self.filters)
+        self.serve_detector = ServeDetector()
+        self.serve_analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=2)
 
         self.output_dir = self._make_output_dir()
         setup_logger(self.output_dir)
@@ -143,6 +147,11 @@ class VideoProcessor:
                 self._update_analytics_geometry(kps, Hmg, src_w, src_h)
                 self.analytics.update_counters(frame_idx, proj_players, ball_proj)
 
+                candidate = self.serve_detector.update(frame_idx, frame, ball_proj, players)
+                if candidate is not None:
+                    logger.bind(frame_idx=frame_idx, player_id=candidate.player_id).info("serve_candidate_detected")
+                    self.serve_analyzer.submit(candidate)
+
                 if self.mode != 'rallies_only':
                     main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
                     bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
@@ -162,6 +171,8 @@ class VideoProcessor:
             if self.analytics._rally_active:
                 self.analytics._finalize_current_rally(frame_idx=frame_idx)
             self.analytics.save_outputs()
+            self.serve_analyzer.shutdown()
+            self._save_serve_report()
             rally_count = len(self.analytics._long_rallies)
             elapsed_s = round(time.time() - self._start_time, 2)
             logger.bind(total_frames=total_frames, rally_count=rally_count, elapsed_s=elapsed_s).info("run_completed")
@@ -384,11 +395,65 @@ class VideoProcessor:
         ph = self.analytics.panel_player_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         bh = self.analytics.panel_ball_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         kd = self.analytics.panel_kitchen_intrusion(None, (panel_w, panel_h))  # players provided via update_counters
-        rl = self.analytics.panel_rally_tempo((panel_w, panel_h))
+        sv = self.analytics.panel_serve_summary(self.serve_analyzer.get_results(), (panel_w, panel_h))
 
         top = cv2.hconcat([ph, bh])
-        bot = cv2.hconcat([kd, rl])
+        bot = cv2.hconcat([kd, sv])
         grid = cv2.vconcat([top, bot])
 
         w, h = target_size
         return cv2.resize(grid, (w, h), interpolation=cv2.INTER_AREA)
+
+    def _save_serve_report(self) -> None:
+        """Write serve_report.json to the run output directory."""
+        import json
+        from datetime import datetime
+        from collections import defaultdict, Counter
+
+        results = self.serve_analyzer.get_results()
+        by_player: dict = defaultdict(list)
+        for r in results:
+            key = f"P{r.player_id}" if r.player_id is not None else "P?"
+            by_player[key].append(r)
+
+        players_data = {}
+        for player_label, serves in by_player.items():
+            scores = [s.score for s in serves]
+            faults = []
+            for s in serves:
+                for field in ("stance", "ball_toss", "contact_point", "follow_through"):
+                    val = getattr(s, field)
+                    if val not in ("good", "unknown"):
+                        faults.append(f"{field}_{val}")
+            common = Counter(faults).most_common(1)
+            players_data[player_label] = {
+                "serve_count": len(serves),
+                "avg_score": round(sum(scores) / len(scores), 1) if scores else 0,
+                "scores": scores,
+                "common_fault": common[0][0] if common else "none",
+                "serves": [
+                    {
+                        "frame_idx": s.frame_idx,
+                        "timestamp_sec": s.timestamp_sec,
+                        "score": s.score,
+                        "stance": s.stance,
+                        "ball_toss": s.ball_toss,
+                        "contact_point": s.contact_point,
+                        "follow_through": s.follow_through,
+                        "landing_zone": s.landing_zone,
+                        "coaching_tip": s.coaching_tip,
+                    }
+                    for s in serves
+                ],
+            }
+
+        report = {
+            "generated": datetime.now().isoformat(),
+            "total_serves": len(results),
+            "players": players_data,
+        }
+
+        report_path = os.path.join(self.output_dir, "serve_report.json")
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        logger.bind(path=report_path, total_serves=len(results)).info("serve_report_saved")
