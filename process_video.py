@@ -275,7 +275,7 @@ class VideoProcessor:
     def _render_main_view(
         self,
         frame: np.ndarray,
-        players: Optional[Iterable[Tuple[float, float, float, float]]],
+        players: Optional[list],
         ball_bbox: Optional[Tuple[float, float, float, float]],
         keypoints: Optional[np.ndarray],
         target_size: Tuple[int, int],
@@ -284,6 +284,7 @@ class VideoProcessor:
 
         # Players — draw bbox and ID label
         for p in players or []:
+            # players are dicts {id, bbox, proj}; tuple fallback for backward compat
             if isinstance(p, dict):
                 x1, y1, x2, y2 = map(int, p["bbox"])
                 pid = p.get("id")
