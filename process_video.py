@@ -282,10 +282,18 @@ class VideoProcessor:
     ) -> np.ndarray:
         canvas = frame.copy()
 
-        # Players
+        # Players — draw bbox and ID label
         for p in players or []:
-            x1, y1, x2, y2 = map(int, p)
+            if isinstance(p, dict):
+                x1, y1, x2, y2 = map(int, p["bbox"])
+                pid = p.get("id")
+            else:
+                x1, y1, x2, y2 = map(int, p)
+                pid = None
             cv2.rectangle(canvas, (x1, y1), (x2, y2), COLOR_PLAYER, 2)
+            if pid is not None:
+                label = f"P{pid}"
+                cv2.putText(canvas, label, (x1, y1 - 8), FONT, FONT_SCALE, COLOR_PLAYER, FONT_THICKNESS)
 
         # Ball
         if ball_bbox:
