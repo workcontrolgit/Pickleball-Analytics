@@ -3,34 +3,30 @@ Player detection & projection module
 
 Purpose
 -------
-Runs YOLO to detect players each frame, then projects each player’s bottom-center
-point into bird’s-eye space for analytics and overlays.
+Runs YOLO with ByteTrack to detect and persistently ID players each frame,
+then projects each player's bottom-center into bird's-eye space.
 
 What it does
 ------------
-- detect_players(frame): YOLO inference → list of [x1, y1, x2, y2] boxes
-- project_player_positions(boxes, H): bottom-center of each box → perspectiveTransform
-- detect_and_project(frame, H): convenience returning (boxes, projected_points)
+- detect_and_project(frame, H): YOLO+ByteTrack → list of player dicts
+  Each dict: {"id": int|None, "bbox": [x1,y1,x2,y2], "proj": (bx,by)|None}
 
 Inputs
 ------
-- BGR frame (OpenCV), homography H (3×3)
+- BGR frame (OpenCV), homography H (3×3 or None)
 
 Outputs
 -------
-- Image-space bounding boxes and bird’s-eye (x, y) points
-
-Assumptions
------------
-- Bottom-center of bbox reasonably approximates foot location for court placement
-- Homography H is valid when projection is requested
+- (players, proj_points) where:
+    players: list[dict] with id, bbox, proj
+    proj_points: list of (bx, by) tuples (for backwards compat with analytics)
 """
-
 
 import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+
 
 class PlayerTracker:
     def __init__(self, model_path, conf_threshold=0.5):
@@ -38,41 +34,37 @@ class PlayerTracker:
         self.conf_threshold = conf_threshold
         self.device = 0 if torch.cuda.is_available() else "cpu"
 
-    def detect_players(self, frame):
-        """
-        Run YOLO player detection on frame.
-        Returns list of bounding boxes in format [x1, y1, x2, y2].
-        """
-        results = self.model.predict(frame, conf=self.conf_threshold, device=self.device)[0]
-        boxes = []
-        for box in results.boxes:
-            bbox = box.xyxy.cpu().numpy()[0]
-            boxes.append(bbox.tolist())
-        return boxes
-
-    def project_player_positions(self, boxes, H):
-        """
-        Given bounding boxes and homography H, project player bottom-center points.
-        Returns list of projected (x, y) tuples in bird's eye space.
-        """
-        projected_pts = []
-        if H is None:
-            return projected_pts
-
-        for box in boxes:
-            x1, y1, x2, y2 = box
-            cx = (x1 + x2) / 2
-            cy = y2  # bottom center of bbox
-            pt = np.array([[[cx, cy]]], dtype=np.float32)
-            proj = cv2.perspectiveTransform(pt, H)[0][0]
-            projected_pts.append(tuple(proj))
-        return projected_pts
-
     def detect_and_project(self, frame, H):
         """
-        Convenience method: detect players and get projected points.
-        Returns tuple: (list of bounding boxes, list of projected points)
+        Run YOLO+ByteTrack on frame. Returns:
+          players: list of {"id": int|None, "bbox": [x1,y1,x2,y2], "proj": (bx,by)|None}
+          proj_points: list of (bx, by) for backwards compatibility
         """
-        boxes = self.detect_players(frame)
-        projected_pts = self.project_player_positions(boxes, H)
-        return boxes, projected_pts
+        results = self.model.track(
+            frame,
+            conf=self.conf_threshold,
+            device=self.device,
+            persist=True,
+            tracker="bytetrack.yaml",
+            verbose=False,
+        )[0]
+
+        players = []
+        for box in results.boxes:
+            bbox = box.xyxy.cpu().numpy()[0].tolist()
+            track_id = None
+            if box.id is not None:
+                track_id = int(box.id.cpu().numpy()[0])
+
+            proj = None
+            if H is not None:
+                x1, y1, x2, y2 = bbox
+                cx = (x1 + x2) / 2
+                cy = y2
+                pt = np.array([[[cx, cy]]], dtype=np.float32)
+                proj = tuple(cv2.perspectiveTransform(pt, H)[0][0])
+
+            players.append({"id": track_id, "bbox": bbox, "proj": proj})
+
+        proj_points = [p["proj"] for p in players if p["proj"] is not None]
+        return players, proj_points
