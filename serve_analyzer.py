@@ -102,7 +102,7 @@ class OllamaServeAnalyzer:
                 }],
                 options={"num_predict": 200},
             )
-            content = response["message"]["content"]
+            content = response.message.content
             # Strip markdown code fences if present
             content = content.strip()
             if content.startswith("```"):

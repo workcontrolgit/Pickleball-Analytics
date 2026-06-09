@@ -5,6 +5,15 @@ from serve_detector import ServeCandidate
 from serve_analyzer import OllamaServeAnalyzer, ServeResult
 
 
+def make_ollama_response(content: str) -> MagicMock:
+    """Build a mock matching the ollama ChatResponse object (attribute-based, not dict)."""
+    msg = MagicMock()
+    msg.content = content
+    resp = MagicMock()
+    resp.message = msg
+    return resp
+
+
 def make_candidate(player_id=1, frame_idx=100):
     return ServeCandidate(
         frame_idx=frame_idx,
@@ -31,7 +40,7 @@ REJECTED_RESPONSE = '{"is_serve": false, "score": 0, "stance": "unknown", "ball_
 
 @patch("serve_analyzer.ollama")
 def test_valid_serve_stored(mock_ollama):
-    mock_ollama.chat.return_value = {"message": {"content": VALID_RESPONSE}}
+    mock_ollama.chat.return_value = make_ollama_response(VALID_RESPONSE)
     analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=1)
     analyzer.submit(make_candidate(player_id=1))
     analyzer.shutdown()
@@ -44,7 +53,7 @@ def test_valid_serve_stored(mock_ollama):
 
 @patch("serve_analyzer.ollama")
 def test_rejected_serve_discarded(mock_ollama):
-    mock_ollama.chat.return_value = {"message": {"content": REJECTED_RESPONSE}}
+    mock_ollama.chat.return_value = make_ollama_response(REJECTED_RESPONSE)
     analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=1)
     analyzer.submit(make_candidate(player_id=2))
     analyzer.shutdown()
@@ -54,7 +63,7 @@ def test_rejected_serve_discarded(mock_ollama):
 
 @patch("serve_analyzer.ollama")
 def test_malformed_json_discarded(mock_ollama):
-    mock_ollama.chat.return_value = {"message": {"content": "not json at all"}}
+    mock_ollama.chat.return_value = make_ollama_response("not json at all")
     analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=1)
     analyzer.submit(make_candidate())
     analyzer.shutdown()
