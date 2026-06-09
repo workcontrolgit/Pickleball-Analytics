@@ -33,6 +33,7 @@ class ServeDetector:
     STILLNESS_PX = 20        # max movement to count as stationary
     LAUNCH_PX = 50           # min movement to count as launch
     COOLDOWN_SEC = 5.0       # seconds between detections
+    MAX_GAP_FRAMES = 5       # tolerate up to 5 consecutive missing detections
 
     def __init__(self, fps: int = 30):
         self._fps = fps
@@ -41,6 +42,7 @@ class ServeDetector:
         self._still_count: int = 0
         self._last_ball: Optional[tuple] = None
         self._last_detected_frame: int = -9999
+        self._missing_frames: int = 0  # consecutive frames with no ball
 
     def update(
         self,
@@ -50,8 +52,12 @@ class ServeDetector:
         players: list,
     ) -> Optional[ServeCandidate]:
         if ball_proj is None:
-            self._reset_stillness()
+            # Tolerate short gaps — ball detection is ~50% reliable
+            self._missing_frames += 1
+            if self._missing_frames > self.MAX_GAP_FRAMES:
+                self._reset_stillness()
             return None
+        self._missing_frames = 0
 
         bx, by = ball_proj
 
@@ -88,6 +94,7 @@ class ServeDetector:
     def _reset_stillness(self):
         self._still_pos = None
         self._still_count = 0
+        self._missing_frames = 0
 
     def _build_candidate(self, frame_idx, frame, ball_pos, players) -> ServeCandidate:
         timestamp_sec = frame_idx / self._fps
