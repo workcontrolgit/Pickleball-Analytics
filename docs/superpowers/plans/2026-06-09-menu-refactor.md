@@ -744,6 +744,150 @@ git commit -m "Per-mode results card, mode_map uses constants, remove badges car
 
 ---
 
+## Task 6: Show video file info in the File Card on selection
+
+**Files:**
+- Modify: `main.py:129-154` (`_build_file_card`)
+- Modify: `main.py:314-320` (`_set_state_file_selected`)
+- Modify: `main.py:305-312` (`_set_state_idle`)
+
+**Background:** After the user picks a video, the File Card currently just shows the
+"Drop or browse" placeholder and the Browse button — the only visual feedback is the
+filename chip in the header. This task replaces the placeholder text with a four-line
+info block (name, folder, date modified, file size) visible inside the card itself.
+
+- [ ] **Step 1: Add info label widgets to `_build_file_card`**
+
+Replace the entire `_build_file_card` method:
+
+```python
+def _build_file_card(self, parent):
+    card = self._make_card(parent, 0, 0)
+    card.grid_columnconfigure(0, weight=1)
+    card.grid_rowconfigure(0, weight=1)
+    card.grid_rowconfigure(1, weight=0)
+
+    # Placeholder shown before a file is chosen
+    self.drop_label = ctk.CTkLabel(
+        card,
+        text="Drop or browse for\na video file",
+        font=ctk.CTkFont(size=14),
+        text_color=MUTED_TEXT,
+        justify="center",
+    )
+    self.drop_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+
+    # Info block shown after a file is chosen (hidden initially)
+    self.file_info_frame = ctk.CTkFrame(card, fg_color="transparent")
+    self.file_name_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                           font=ctk.CTkFont(size=13, weight="bold"),
+                                           text_color=BODY_TEXT, wraplength=260)
+    self.file_folder_label  = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=MUTED_TEXT, wraplength=260)
+    self.file_date_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=MUTED_TEXT)
+    self.file_size_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=MUTED_TEXT)
+    self.file_name_label.pack(anchor="w", pady=(0, 2))
+    self.file_folder_label.pack(anchor="w")
+    self.file_date_label.pack(anchor="w")
+    self.file_size_label.pack(anchor="w")
+    # hidden until a file is selected
+    self.file_info_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+    self.file_info_frame.grid_remove()
+
+    self.browse_btn = ctk.CTkButton(
+        card,
+        text="Browse Video",
+        fg_color=CTA,
+        text_color="black",
+        font=ctk.CTkFont(size=13, weight="bold"),
+        corner_radius=8,
+        command=self.select_video,
+    )
+    self.browse_btn.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+```
+
+- [ ] **Step 2: Populate and show info block in `_set_state_file_selected`**
+
+Replace the entire `_set_state_file_selected` method:
+
+```python
+def _set_state_file_selected(self):
+    import os
+    from datetime import datetime
+
+    path = self.video_path
+    filename   = os.path.basename(path)
+    folder     = os.path.dirname(path)
+    size_mb    = os.path.getsize(path) / (1024 * 1024)
+    modified   = datetime.fromtimestamp(os.path.getmtime(path))
+    date_str   = modified.strftime("%Y-%m-%d  %H:%M")
+
+    # Update chip in header
+    self.chip_label.configure(text=filename)
+    self.chip_frame.grid()
+
+    # Fill info labels
+    self.file_name_label.configure(text=filename)
+    self.file_folder_label.configure(text=folder)
+    self.file_date_label.configure(text=f"Modified: {date_str}")
+    self.file_size_label.configure(text=f"Size: {size_mb:.1f} MB")
+
+    # Swap placeholder for info block
+    self.drop_label.grid_remove()
+    self.file_info_frame.grid()
+
+    self.mode_selector.configure(state="normal")
+    self.process_btn.configure(state="normal")
+    self.status_label.configure(text="Ready to process", text_color=BODY_TEXT)
+```
+
+- [ ] **Step 3: Restore placeholder on idle (no file selected)**
+
+In `_set_state_idle`, add two lines after `self.chip_frame.grid_remove()`:
+
+```python
+def _set_state_idle(self):
+    self.mode_selector.configure(state="disabled")
+    self.process_btn.configure(state="disabled")
+    self.chip_frame.grid_remove()
+    self.file_info_frame.grid_remove()   # hide info block
+    self.drop_label.grid()               # show placeholder again
+    self.progress_bar.set(0)
+    self.status_label.configure(
+        text="Select a video to begin", text_color=MUTED_TEXT
+    )
+```
+
+- [ ] **Step 4: Run the app and verify file info display**
+
+```
+.venv/Scripts/python main.py
+```
+
+Expected:
+- Before selecting a file: File Card shows "Drop or browse for a video file"
+- After selecting `Sample3.mp4`:
+  - Card shows filename in bold (e.g. `Sample3.mp4`)
+  - Folder path on next line (e.g. `C:/apps/pickleball/Pickleball-Analytics/video_outputs`)
+  - Modified date (e.g. `Modified: 2026-06-08  14:23`)
+  - File size (e.g. `Size: 47.3 MB`)
+- Browse button still visible and clickable
+- Selecting a different file updates all four labels
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add main.py
+git commit -m "Show video file info (name, folder, date, size) in File Card on selection"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -755,9 +899,11 @@ git commit -m "Per-mode results card, mode_map uses constants, remove badges car
 - ✅ Per-mode results card (Task 5)
 - ✅ Badges card removed — inaccurate across modes (Task 5)
 - ✅ Results card spans full bottom row after badges removal (Task 5)
+- ✅ File info (name, folder, date, size) shown on file selection (Task 6)
 
 **Placeholder scan:** None found — all steps have complete code.
 
 **Type consistency:**
 - `_set_state_complete` signature changes from `(rally_count, out_dir, mode)` to `(rally_count, serve_count, serve_avg, out_dir, mode)` — verified the lambda in Task 5 Step 1 and the method definition in Task 5 Step 2 match exactly.
 - `MODE_DESCRIPTIONS` dict defined at module level before `App` class — referenced in `_build_mode_card` and `_on_mode_changed`, both inside `App`. Consistent.
+- `file_info_frame`, `drop_label` referenced in Tasks 6 Steps 1, 2, 3 — all defined in `_build_file_card` Step 1 and used consistently.
