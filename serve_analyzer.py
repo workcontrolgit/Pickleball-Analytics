@@ -20,9 +20,12 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
+
+from loguru import logger
 
 import cv2
 
@@ -75,6 +78,7 @@ class OllamaServeAnalyzer:
 
     def submit(self, candidate: ServeCandidate) -> None:
         """Submit a candidate for async analysis. Non-blocking."""
+        logger.bind(frame_idx=candidate.frame_idx, player_id=candidate.player_id).info("ollama_submit")
         self._executor.submit(self._analyze, candidate)
 
     def get_results(self) -> list[ServeResult]:
@@ -88,7 +92,10 @@ class OllamaServeAnalyzer:
 
     def _analyze(self, candidate: ServeCandidate) -> None:
         if ollama is None:
+            logger.warning("ollama_not_installed")
             return
+        log = logger.bind(frame_idx=candidate.frame_idx, player_id=candidate.player_id)
+        log.info("ollama_call_start")
         try:
             _, buf = cv2.imencode(".jpg", candidate.frame_small)
             image_b64 = base64.b64encode(buf).decode()
@@ -111,6 +118,7 @@ class OllamaServeAnalyzer:
                     content = content[4:]
 
             data = json.loads(content)
+            log.bind(is_serve=data.get("is_serve"), score=data.get("score")).info("ollama_response")
             if not data.get("is_serve", False):
                 return
 
@@ -129,6 +137,7 @@ class OllamaServeAnalyzer:
             )
             with self._lock:
                 self._results.append(result)
+            log.bind(score=result.score).info("serve_result_stored")
 
         except Exception:
-            pass  # silently discard on timeout or parse failure
+            log.bind(error=traceback.format_exc()).warning("ollama_call_failed")
