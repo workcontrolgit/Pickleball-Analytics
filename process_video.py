@@ -124,7 +124,14 @@ class VideoProcessor:
         total_frames, src_w, src_h, fps = self._read_video_meta(cap)
         out_w, out_h, main_w, be_w, grid_w, panel_w, panel_h = self._compute_layout(src_w, src_h)
 
-        self.analytics.set_canvas_size(src_w, src_h)
+        # Use working dimensions (post-downscale) so fallback net_y and court_bounds
+        # match the actual pixel coords used when homography is unavailable.
+        work_w, work_h = src_w, src_h
+        if src_h > 1080:
+            scale = 1080 / src_h
+            work_w = int(src_w * scale)
+            work_h = 1080
+        self.analytics.set_canvas_size(work_w, work_h)
         self.analytics.set_video_context(total_frames=total_frames, fps=fps)
 
         writer = None
