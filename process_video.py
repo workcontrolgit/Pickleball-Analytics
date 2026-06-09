@@ -149,19 +149,20 @@ class VideoProcessor:
         total_frames, src_w, src_h, fps = self._read_video_meta(cap)
         out_w, out_h, main_w, be_w, grid_w, panel_w, panel_h = self._compute_layout(src_w, src_h)
 
-        # Use working dimensions (post-downscale) so fallback net_y and court_bounds
-        # match the actual pixel coords used when homography is unavailable.
+        # Working dimensions — match per-frame downscale so fallback coords are correct
         work_w, work_h = src_w, src_h
         if src_h > 1080:
             scale = 1080 / src_h
             work_w = int(src_w * scale)
             work_h = 1080
-        self.analytics.set_canvas_size(work_w, work_h)
-        self.analytics.set_video_context(total_frames=total_frames, fps=fps)
+
+        if self.mode in (MODE_VIDEO_ANALYSIS, MODE_SPLIT_RALLIES):
+            self.analytics.set_canvas_size(work_w, work_h)
+            self.analytics.set_video_context(total_frames=total_frames, fps=fps)
 
         writer = None
         out_path = None
-        if self.mode != 'rallies_only':
+        if self.mode == MODE_VIDEO_ANALYSIS:
             out_path, writer = self._create_writer(out_w, out_h, fps)
 
         frame_idx = 0
@@ -171,59 +172,89 @@ class VideoProcessor:
                 if not ret:
                     break
 
-                # Downscale 4K+ frames to 1080p so output is compatible with standard players
+                # Downscale 4K+ frames to 1080p
                 if frame.shape[0] > 1080:
                     scale = 1080 / frame.shape[0]
-                    frame = cv2.resize(frame, (int(frame.shape[1] * scale), 1080), interpolation=cv2.INTER_AREA)
+                    frame = cv2.resize(
+                        frame,
+                        (int(frame.shape[1] * scale), 1080),
+                        interpolation=cv2.INTER_AREA,
+                    )
 
-                # Re-detect court every 30 frames; reuse cached result otherwise (court is static)
+                # ── Common detections (all modes) ──────────────────────────
                 if frame_idx % 30 == 0 or self._cached_kps is None:
                     kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
                     if kps is not None:
                         self._cached_kps, self._cached_Hmg = kps, Hmg
                 else:
                     kps, Hmg = self._cached_kps, self._cached_Hmg
+
                 if frame_idx == 0:
                     logger.bind(frame_idx=frame_idx, homography_valid=Hmg is not None).info("court_detected")
+
                 players, proj_players = self.player_tracker.detect_and_project(frame, Hmg)
-                ball_det = self.ball_tracker.detect_frame(frame)
+                ball_det  = self.ball_tracker.detect_frame(frame)
                 ball_bbox, ball_proj = self.ball_tracker.process_and_project(ball_det, frame, Hmg)
 
-                self._update_analytics_geometry(kps, Hmg, src_w, src_h)
-                self.analytics.update_counters(frame_idx, proj_players, ball_proj)
-
-                candidate = self.serve_detector.update(frame_idx, frame, ball_proj, players)
-                if candidate is not None:
-                    logger.bind(frame_idx=frame_idx, player_id=candidate.player_id).info("serve_candidate_detected")
-                    self.serve_analyzer.submit(candidate)
-
-                if self.mode != 'rallies_only':
+                # ── Video Analysis ─────────────────────────────────────────
+                if self.mode == MODE_VIDEO_ANALYSIS:
+                    self._update_analytics_geometry(kps, Hmg, work_w, work_h)
+                    self.analytics.update_counters(frame_idx, proj_players, ball_proj)
                     main_col = self._render_main_view(frame, players, ball_bbox, kps, (main_w, out_h))
-                    bird_col = self._render_birdseye(src_w, src_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
+                    bird_col = self._render_birdseye(work_w, work_h, kps, Hmg, proj_players, ball_proj, (be_w, out_h))
                     grid_col = self._render_analytics_grid((panel_w, panel_h), (grid_w, out_h), bird_reference=bird_col)
-                    composite = cv2.hconcat([main_col, bird_col, grid_col])
-                    writer.write(composite)
+                    writer.write(cv2.hconcat([main_col, bird_col, grid_col]))
+
+                # ── Split Rallies ──────────────────────────────────────────
+                elif self.mode == MODE_SPLIT_RALLIES:
+                    self._update_analytics_geometry(kps, Hmg, work_w, work_h)
+                    self.analytics.update_counters(frame_idx, proj_players, ball_proj)
+                    # No rendering — detection only
+
+                # ── Detect Serve ───────────────────────────────────────────
+                elif self.mode == MODE_DETECT_SERVE:
+                    candidate = self.serve_detector.update(frame_idx, frame, ball_proj, players)
+                    if candidate is not None:
+                        logger.bind(frame_idx=frame_idx, player_id=candidate.player_id).info("serve_candidate_detected")
+                        self.serve_analyzer.submit(candidate)
 
                 frame_idx += 1
                 if frame_idx % 500 == 0 and total_frames > 0:
-                    logger.bind(frame_idx=frame_idx, total_frames=total_frames, progress_pct=round(frame_idx / total_frames * 100, 1)).debug("frame_milestone")
+                    logger.bind(
+                        frame_idx=frame_idx,
+                        total_frames=total_frames,
+                        progress_pct=round(frame_idx / total_frames * 100, 1),
+                    ).debug("frame_milestone")
                 self._report_progress(progress_callback, frame_idx, total_frames)
+
         finally:
             cap.release()
-            if writer:
-                writer.release()
-            # Finalize any rally still active at video end
-            if self.analytics._rally_active:
-                self.analytics._finalize_current_rally(frame_idx=frame_idx)
-            self.analytics.save_outputs()
-            self.serve_analyzer.shutdown()
-            self._save_serve_report()
-            rally_count = len(self.analytics._long_rallies)
+
+            # ── Video Analysis finalization ────────────────────────────────
+            if self.mode == MODE_VIDEO_ANALYSIS:
+                if writer:
+                    writer.release()
+                if self.analytics._rally_active:
+                    self.analytics._finalize_current_rally(frame_idx=frame_idx)
+                self.analytics.save_outputs()
+
+            # ── Split Rallies finalization ─────────────────────────────────
+            elif self.mode == MODE_SPLIT_RALLIES:
+                if self.analytics._rally_active:
+                    self.analytics._finalize_current_rally(frame_idx=frame_idx)
+                self.analytics.save_outputs()
+
+            # ── Detect Serve finalization ──────────────────────────────────
+            elif self.mode == MODE_DETECT_SERVE:
+                self.serve_analyzer.shutdown()
+                self._save_serve_report()
+
+            rally_count = len(self.analytics._long_rallies) if hasattr(self, "analytics") else 0
             elapsed_s = round(time.time() - self._start_time, 2)
             logger.bind(total_frames=total_frames, rally_count=rally_count, elapsed_s=elapsed_s).info("run_completed")
             self._report_progress(progress_callback, total_frames, total_frames)
 
-        if self.mode in ('rallies_only', 'full_and_rallies'):
+        if self.mode == MODE_SPLIT_RALLIES:
             self._clip_long_rallies(total_frames, fps)
 
         if out_path:
@@ -445,7 +476,8 @@ class VideoProcessor:
         ph = self.analytics.panel_player_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         bh = self.analytics.panel_ball_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         kd = self.analytics.panel_kitchen_intrusion(None, (panel_w, panel_h))  # players provided via update_counters
-        sv = self.analytics.panel_serve_summary(self.serve_analyzer.get_results(), (panel_w, panel_h))
+        serve_results = self.serve_analyzer.get_results() if hasattr(self, "serve_analyzer") else []
+        sv = self.analytics.panel_serve_summary(serve_results, (panel_w, panel_h))
 
         top = cv2.hconcat([ph, bh])
         bot = cv2.hconcat([kd, sv])
