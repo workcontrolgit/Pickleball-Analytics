@@ -1,5 +1,4 @@
 """Tests for process_video mode constants and VideoProcessor mode guard."""
-import pytest
 from process_video import (
     MODE_VIDEO_ANALYSIS,
     MODE_SPLIT_RALLIES,
