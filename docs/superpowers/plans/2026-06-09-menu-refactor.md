@@ -558,11 +558,13 @@ git commit -m "Update mode selector: new labels, description label, _on_mode_cha
 
 ---
 
-## Task 5: Update `main.py` — mode_map, results card, badges card title
+## Task 5: Update `main.py` — mode_map, results card, remove badges card
 
 **Files:**
 - Modify: `main.py:392-422` (`_process_video` and `_set_state_complete`)
-- Modify: `main.py:204-225` (`_build_badges_card`)
+- Modify: `main.py:104-116` (`_build_card_area` — remove badges card call, fix layout)
+- Delete method: `_build_badges_card` (~lines 196-225)
+- Modify: `_build_results_card` — span both columns in row 1
 
 - [ ] **Step 1: Update `_process_video` to use mode constants**
 
@@ -661,25 +663,57 @@ def _set_state_complete(self, rally_count, serve_count, serve_avg, out_dir, mode
     self._reveal_results()
 ```
 
-- [ ] **Step 3: Rename the badges card title**
+- [ ] **Step 3: Remove the badges card and fix the layout**
 
-In `_build_badges_card` (around line 204), replace:
+**3a.** In `_build_card_area`, replace the entire method body:
 
 ```python
 # Before
-ctk.CTkLabel(
-    card,
-    text="Analytics (Always Included)",
-    ...
-)
+def _build_card_area(self):
+    area = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+    area.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 10))
+    area.grid_columnconfigure(0, weight=1)
+    area.grid_columnconfigure(1, weight=1)
+    area.grid_rowconfigure(0, weight=1)
+    area.grid_rowconfigure(1, weight=1)
+
+    self._build_file_card(area)
+    self._build_mode_card(area)
+    self._build_badges_card(area)
+    self._build_results_card(area)
 
 # After
-ctk.CTkLabel(
-    card,
-    text="Detection Capabilities",
-    ...
+def _build_card_area(self):
+    area = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+    area.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 10))
+    area.grid_columnconfigure(0, weight=1)
+    area.grid_columnconfigure(1, weight=1)
+    area.grid_rowconfigure(0, weight=1)
+    area.grid_rowconfigure(1, weight=1)
+
+    self._build_file_card(area)
+    self._build_mode_card(area)
+    self._build_results_card(area)
+```
+
+**3b.** Delete the entire `_build_badges_card` method (approximately lines 196–225).
+
+**3c.** In `_build_results_card`, change the `_make_card` call so results spans both
+columns in row 1:
+
+```python
+# Before
+self.results_card = self._make_card(parent, 1, 1, height=0)
+
+# After — span both columns so it fills the full bottom row
+self.results_card = self._make_card(parent, 1, 0, height=0)
+self.results_card.grid(
+    row=1, column=0, columnspan=2, padx=8, pady=8, sticky="nsew"
 )
 ```
+
+Note: `_make_card` calls `card.grid(...)` internally, so the second `.grid()` call
+above overrides the placement with `columnspan=2`.
 
 - [ ] **Step 4: Run the app end-to-end with each mode**
 
@@ -705,7 +739,7 @@ Expected: all tests pass
 
 ```bash
 git add main.py
-git commit -m "Per-mode results card, mode_map uses constants, rename badges card title"
+git commit -m "Per-mode results card, mode_map uses constants, remove badges card"
 ```
 
 ---
@@ -719,7 +753,8 @@ git commit -m "Per-mode results card, mode_map uses constants, rename badges car
 - ✅ Mode selector new labels + description label (Task 4)
 - ✅ mode_map uses imported constants (Task 5)
 - ✅ Per-mode results card (Task 5)
-- ✅ Badges card title renamed (Task 5)
+- ✅ Badges card removed — inaccurate across modes (Task 5)
+- ✅ Results card spans full bottom row after badges removal (Task 5)
 
 **Placeholder scan:** None found — all steps have complete code.
 
