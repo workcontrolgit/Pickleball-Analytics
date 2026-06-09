@@ -197,7 +197,7 @@ class App(ctk.CTk):
 
         self.mode_desc_label = ctk.CTkLabel(
             card,
-            text=MODE_DESCRIPTIONS["Video Analysis"],
+            text=MODE_DESCRIPTIONS.get(self.mode_var.get(), ""),
             font=ctk.CTkFont(size=11),
             text_color=MUTED_TEXT,
             wraplength=280,
