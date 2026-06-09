@@ -137,6 +137,11 @@ class VideoProcessor:
                 if not ret:
                     break
 
+                # Downscale 4K+ frames to 1080p so output is compatible with standard players
+                if frame.shape[0] > 1080:
+                    scale = 1080 / frame.shape[0]
+                    frame = cv2.resize(frame, (int(frame.shape[1] * scale), 1080), interpolation=cv2.INTER_AREA)
+
                 kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
                 if frame_idx == 0:
                     logger.bind(frame_idx=frame_idx, homography_valid=Hmg is not None).info("court_detected")
@@ -212,6 +217,11 @@ class VideoProcessor:
 
     @staticmethod
     def _compute_layout(src_w: int, src_h: int) -> Tuple[int, int, int, int, int, int, int]:
+        # Cap at 1080p so output is playable on Windows without a 4K-capable player
+        if src_h > 1080:
+            scale = 1080 / src_h
+            src_w = int(src_w * scale)
+            src_h = 1080
         out_w = int(src_w * OUTPUT_WIDTH_SCALE)
         out_h = src_h
         main_w = int(out_w * MAIN_RATIO)
