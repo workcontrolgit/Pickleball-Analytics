@@ -456,7 +456,7 @@ class VideoProcessor:
         src_w: int,
         src_h: int,
     ) -> None:
-        """Project keypoints and update analytics zone geometry. Called every frame regardless of mode."""
+        """Project keypoints and update analytics zone geometry. Called for VIDEO_ANALYSIS and SPLIT_RALLIES modes only."""
         if keypoints is None or Hmg is None:
             return
         pts = np.array(keypoints, dtype=np.float32).reshape(-1, 1, 2)
