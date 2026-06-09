@@ -34,6 +34,24 @@ from serve_detector import ServeDetector
 from serve_analyzer import OllamaServeAnalyzer
 
 # ==============================================================================
+# Processing Modes
+# ==============================================================================
+# Pick exactly one per run. Each mode runs court/player/ball detection,
+# then diverges based on what output it produces.
+
+MODE_VIDEO_ANALYSIS = "video_analysis"
+# Produces: Main_overlay.mp4 — annotated video with player/ball/court
+#           overlays, bird's-eye view, and analytics panels.
+
+MODE_SPLIT_RALLIES = "split_rallies"
+# Produces: rally_01.mp4, rally_02.mp4, … — one raw clip per long rally
+#           (5+ net crossings). No annotated video.
+
+MODE_DETECT_SERVE = "detect_serve"
+# Produces: serve_report.json — serve candidates scored by Ollama vision.
+#           No video output. Fastest mode.
+
+# ==============================================================================
 # Module‑level constants (easy to tweak and reuse)
 # ==============================================================================
 PROJECT_DIR: str = os.path.dirname(os.path.abspath(__file__))
