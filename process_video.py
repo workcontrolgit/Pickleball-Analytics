@@ -108,6 +108,8 @@ class VideoProcessor:
         self.analytics = Analytics(self.filters)
         self.serve_detector = ServeDetector()
         self.serve_analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=2)
+        self._cached_kps = None   # court keypoints cache (court is static)
+        self._cached_Hmg = None
 
         self.output_dir = self._make_output_dir()
         setup_logger(self.output_dir)
@@ -142,7 +144,13 @@ class VideoProcessor:
                     scale = 1080 / frame.shape[0]
                     frame = cv2.resize(frame, (int(frame.shape[1] * scale), 1080), interpolation=cv2.INTER_AREA)
 
-                kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
+                # Re-detect court every 30 frames; reuse cached result otherwise (court is static)
+                if frame_idx % 30 == 0 or self._cached_kps is None:
+                    kps, Hmg = self.court_mapper.get_keypoints_and_homography(frame)
+                    if kps is not None:
+                        self._cached_kps, self._cached_Hmg = kps, Hmg
+                else:
+                    kps, Hmg = self._cached_kps, self._cached_Hmg
                 if frame_idx == 0:
                     logger.bind(frame_idx=frame_idx, homography_valid=Hmg is not None).info("court_detected")
                 players, proj_players = self.player_tracker.detect_and_project(frame, Hmg)
