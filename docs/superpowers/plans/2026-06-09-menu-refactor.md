@@ -888,6 +888,284 @@ git commit -m "Show video file info (name, folder, date, size) in File Card on s
 
 ---
 
+## Task 7: Video thumbnail preview in the File Card
+
+**Files:**
+- Modify: `main.py` — `_build_file_card`, `_set_state_file_selected`, `_set_state_idle`
+
+**Background:** After Task 6, the File Card shows a text info block when a video is
+selected. This task adds a thumbnail image above the info block — a single frame
+extracted ~1 second into the video using OpenCV, displayed via `CTkImage`.
+`CTkImage` (from customtkinter) handles HiDPI scaling automatically and accepts a
+PIL Image. Pillow is already a transitive dependency of customtkinter.
+
+The thumbnail is sized to 260×146 px (16:9 aspect) inside the card. If the video
+cannot be read (corrupt file, unsupported codec), the placeholder text is shown
+instead — no crash.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_thumbnail.py`:
+
+```python
+"""Tests for the _extract_thumbnail helper."""
+import numpy as np
+import pytest
+from unittest.mock import patch, MagicMock
+
+
+def _import_extract():
+    """Import after patching so we don't need a real display."""
+    import importlib, sys
+    # Stub out customtkinter and tkinter so main.py can be imported headlessly
+    for mod in ("customtkinter", "tkinter", "tkinter.filedialog"):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
+    import main
+    return main._extract_thumbnail
+
+
+def test_returns_pil_image_for_valid_video(tmp_path):
+    """Should return a PIL Image when OpenCV can read a frame."""
+    from PIL import Image
+    fake_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    with patch("main.cv2") as mock_cv2:
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        cap.read.return_value = (True, fake_frame)
+        mock_cv2.VideoCapture.return_value = cap
+        mock_cv2.CAP_PROP_FPS = 5
+        mock_cv2.cvtColor.return_value = fake_frame
+        mock_cv2.COLOR_BGR2RGB = 4
+        mock_cv2.resize.return_value = np.zeros((146, 260, 3), dtype=np.uint8)
+        mock_cv2.INTER_AREA = 3
+
+        fn = _import_extract()
+        result = fn("fake.mp4", thumb_w=260, thumb_h=146)
+
+    assert isinstance(result, Image.Image)
+
+
+def test_returns_none_for_unreadable_video():
+    """Should return None (not raise) when OpenCV cannot open the file."""
+    with patch("main.cv2") as mock_cv2:
+        cap = MagicMock()
+        cap.isOpened.return_value = False
+        mock_cv2.VideoCapture.return_value = cap
+
+        fn = _import_extract()
+        result = fn("bad.mp4", thumb_w=260, thumb_h=146)
+
+    assert result is None
+```
+
+- [ ] **Step 2: Run test to confirm it fails**
+
+```
+.venv/Scripts/pytest tests/test_thumbnail.py -v
+```
+
+Expected: `AttributeError: module 'main' has no attribute '_extract_thumbnail'`
+
+- [ ] **Step 3: Add `_extract_thumbnail` module-level helper to `main.py`**
+
+Add this function just above the `MODE_DESCRIPTIONS` dict (before the `App` class):
+
+```python
+def _extract_thumbnail(path: str, thumb_w: int = 260, thumb_h: int = 146):
+    """
+    Extract one frame ~1 second into the video and return it as a PIL Image
+    sized to (thumb_w x thumb_h). Returns None if the video cannot be read.
+    """
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps))   # seek to ~1 second
+        ret, frame = cap.read()
+        cap.release()
+        if not ret or frame is None:
+            return None
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        thumb = cv2.resize(frame_rgb, (thumb_w, thumb_h), interpolation=cv2.INTER_AREA)
+        from PIL import Image
+        return Image.fromarray(thumb)
+    except Exception:
+        return None
+```
+
+Also add `import cv2` near the top of `main.py` (after the existing imports):
+
+```python
+import cv2
+```
+
+- [ ] **Step 4: Run tests to confirm they pass**
+
+```
+.venv/Scripts/pytest tests/test_thumbnail.py -v
+```
+
+Expected: 2 passed
+
+- [ ] **Step 5: Add thumbnail widget to `_build_file_card`**
+
+In `_build_file_card` (updated in Task 6), add a thumbnail label row between the
+drop placeholder and the info frame. The updated method becomes:
+
+```python
+def _build_file_card(self, parent):
+    card = self._make_card(parent, 0, 0)
+    card.grid_columnconfigure(0, weight=1)
+    card.grid_rowconfigure(0, weight=1)  # placeholder / thumbnail
+    card.grid_rowconfigure(1, weight=0)  # file info
+    card.grid_rowconfigure(2, weight=0)  # browse button
+
+    # Placeholder shown before a file is chosen
+    self.drop_label = ctk.CTkLabel(
+        card,
+        text="Drop or browse for\na video file",
+        font=ctk.CTkFont(size=14),
+        text_color=MUTED_TEXT,
+        justify="center",
+    )
+    self.drop_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+
+    # Thumbnail shown after a file is chosen (hidden initially)
+    self.thumb_label = ctk.CTkLabel(card, text="")
+    self.thumb_label.grid(row=0, column=0, padx=20, pady=(12, 6), sticky="n")
+    self.thumb_label.grid_remove()
+
+    # Info block shown after a file is chosen (hidden initially)
+    self.file_info_frame = ctk.CTkFrame(card, fg_color="transparent")
+    self.file_name_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                          font=ctk.CTkFont(size=13, weight="bold"),
+                                          text_color=BODY_TEXT, wraplength=260)
+    self.file_folder_label = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                          font=ctk.CTkFont(size=11),
+                                          text_color=MUTED_TEXT, wraplength=260)
+    self.file_date_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                          font=ctk.CTkFont(size=11),
+                                          text_color=MUTED_TEXT)
+    self.file_size_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                          font=ctk.CTkFont(size=11),
+                                          text_color=MUTED_TEXT)
+    self.file_name_label.pack(anchor="w", pady=(0, 2))
+    self.file_folder_label.pack(anchor="w")
+    self.file_date_label.pack(anchor="w")
+    self.file_size_label.pack(anchor="w")
+    self.file_info_frame.grid(row=1, column=0, padx=20, pady=(0, 8), sticky="ew")
+    self.file_info_frame.grid_remove()
+
+    self.browse_btn = ctk.CTkButton(
+        card,
+        text="Browse Video",
+        fg_color=CTA,
+        text_color="black",
+        font=ctk.CTkFont(size=13, weight="bold"),
+        corner_radius=8,
+        command=self.select_video,
+    )
+    self.browse_btn.grid(row=2, column=0, padx=20, pady=(0, 20), sticky="ew")
+```
+
+- [ ] **Step 6: Load and display thumbnail in `_set_state_file_selected`**
+
+Replace `_set_state_file_selected` (already updated in Task 6) with this version
+that also loads the thumbnail:
+
+```python
+def _set_state_file_selected(self):
+    import os
+    from datetime import datetime
+
+    path = self.video_path
+    filename = os.path.basename(path)
+    folder   = os.path.dirname(path)
+    size_mb  = os.path.getsize(path) / (1024 * 1024)
+    modified = datetime.fromtimestamp(os.path.getmtime(path))
+    date_str = modified.strftime("%Y-%m-%d  %H:%M")
+
+    # Header chip
+    self.chip_label.configure(text=filename)
+    self.chip_frame.grid()
+
+    # Thumbnail
+    pil_img = _extract_thumbnail(path, thumb_w=260, thumb_h=146)
+    if pil_img is not None:
+        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img,
+                               size=(260, 146))
+        self.thumb_label.configure(image=ctk_img, text="")
+        self.thumb_label._ctk_image = ctk_img  # prevent GC
+        self.drop_label.grid_remove()
+        self.thumb_label.grid()
+    else:
+        # Fallback: keep placeholder text visible, hide thumb
+        self.thumb_label.grid_remove()
+        self.drop_label.grid()
+
+    # File info labels
+    self.file_name_label.configure(text=filename)
+    self.file_folder_label.configure(text=folder)
+    self.file_date_label.configure(text=f"Modified: {date_str}")
+    self.file_size_label.configure(text=f"Size: {size_mb:.1f} MB")
+    self.file_info_frame.grid()
+
+    self.mode_selector.configure(state="normal")
+    self.process_btn.configure(state="normal")
+    self.status_label.configure(text="Ready to process", text_color=BODY_TEXT)
+```
+
+- [ ] **Step 7: Hide thumbnail on idle**
+
+In `_set_state_idle` (updated in Task 6), add `self.thumb_label.grid_remove()`:
+
+```python
+def _set_state_idle(self):
+    self.mode_selector.configure(state="disabled")
+    self.process_btn.configure(state="disabled")
+    self.chip_frame.grid_remove()
+    self.thumb_label.grid_remove()        # hide thumbnail
+    self.file_info_frame.grid_remove()    # hide info block
+    self.drop_label.grid()                # show placeholder
+    self.progress_bar.set(0)
+    self.status_label.configure(
+        text="Select a video to begin", text_color=MUTED_TEXT
+    )
+```
+
+- [ ] **Step 8: Run the app and verify thumbnail**
+
+```
+.venv/Scripts/python main.py
+```
+
+Expected:
+- Before selecting: File Card shows "Drop or browse for a video file"
+- After selecting `Sample3.mp4`: card shows a 260×146 thumbnail from ~1s in,
+  with filename/folder/date/size below it
+- Selecting a different video replaces the thumbnail and updates all info labels
+- If an unreadable file is somehow selected, placeholder text shows instead of crashing
+
+- [ ] **Step 9: Run full test suite**
+
+```
+.venv/Scripts/pytest tests/ -v
+```
+
+Expected: all tests pass
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add main.py tests/test_thumbnail.py
+git commit -m "Add video thumbnail preview in File Card"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -900,10 +1178,12 @@ git commit -m "Show video file info (name, folder, date, size) in File Card on s
 - ✅ Badges card removed — inaccurate across modes (Task 5)
 - ✅ Results card spans full bottom row after badges removal (Task 5)
 - ✅ File info (name, folder, date, size) shown on file selection (Task 6)
+- ✅ Thumbnail preview (260×146, ~1s in) with fallback to placeholder (Task 7)
 
 **Placeholder scan:** None found — all steps have complete code.
 
 **Type consistency:**
 - `_set_state_complete` signature changes from `(rally_count, out_dir, mode)` to `(rally_count, serve_count, serve_avg, out_dir, mode)` — verified the lambda in Task 5 Step 1 and the method definition in Task 5 Step 2 match exactly.
 - `MODE_DESCRIPTIONS` dict defined at module level before `App` class — referenced in `_build_mode_card` and `_on_mode_changed`, both inside `App`. Consistent.
-- `file_info_frame`, `drop_label` referenced in Tasks 6 Steps 1, 2, 3 — all defined in `_build_file_card` Step 1 and used consistently.
+- `file_info_frame`, `drop_label`, `thumb_label` all defined in `_build_file_card` (Task 7 Step 5) and referenced consistently in `_set_state_file_selected` (Step 6) and `_set_state_idle` (Step 7).
+- `_extract_thumbnail` defined as module-level function (Step 3), called in `_set_state_file_selected` (Step 6). Consistent.
