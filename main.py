@@ -23,7 +23,12 @@ Primary entry point
 import os
 import customtkinter as ctk
 from tkinter import filedialog
-from process_video import VideoProcessor
+from process_video import (
+    VideoProcessor,
+    MODE_VIDEO_ANALYSIS,
+    MODE_SPLIT_RALLIES,
+    MODE_DETECT_SERVE,
+)
 import threading
 
 ctk.set_appearance_mode("Dark")
@@ -41,6 +46,13 @@ BODY_TEXT   = "#E0E0E0"
 MUTED_TEXT  = "#6B7280"
 
 
+MODE_DESCRIPTIONS = {
+    "Video Analysis": "Produces an annotated video with overlays and analytics",
+    "Split Rallies":  "Finds long rallies and saves each one as a clip",
+    "Detect Serve":   "Scores serves using AI vision — fastest mode",
+}
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -51,7 +63,7 @@ class App(ctk.CTk):
 
         self.video_path = None
         self.out_dir = None
-        self.mode_var = ctk.StringVar(value="Full Analytics")
+        self.mode_var = ctk.StringVar(value="Video Analysis")
         self._reveal_id = None
 
         self._build_ui()
@@ -158,8 +170,10 @@ class App(ctk.CTk):
         card = self._make_card(parent, 0, 1)
         card.grid_columnconfigure(0, weight=1)
         card.grid_rowconfigure(0, weight=0)
-        card.grid_rowconfigure(1, weight=1)
+        card.grid_rowconfigure(1, weight=0)
         card.grid_rowconfigure(2, weight=0)
+        card.grid_rowconfigure(3, weight=1)
+        card.grid_rowconfigure(4, weight=0)
 
         ctk.CTkLabel(
             card,
@@ -170,15 +184,26 @@ class App(ctk.CTk):
 
         self.mode_selector = ctk.CTkSegmentedButton(
             card,
-            values=["Full Analytics", "Rallies Only", "Full + Rallies"],
+            values=["Video Analysis", "Split Rallies", "Detect Serve"],
             variable=self.mode_var,
             state="disabled",
             selected_color=CTA,
             selected_hover_color="#00B8D9",
             unselected_color=CARD_BORDER,
             font=ctk.CTkFont(size=12),
+            command=self._on_mode_changed,
         )
         self.mode_selector.grid(row=1, column=0, padx=16, pady=8, sticky="ew")
+
+        self.mode_desc_label = ctk.CTkLabel(
+            card,
+            text=MODE_DESCRIPTIONS["Video Analysis"],
+            font=ctk.CTkFont(size=11),
+            text_color=MUTED_TEXT,
+            wraplength=280,
+            justify="left",
+        )
+        self.mode_desc_label.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="w")
 
         self.process_btn = ctk.CTkButton(
             card,
@@ -190,7 +215,7 @@ class App(ctk.CTk):
             state="disabled",
             command=self.process_video_thread,
         )
-        self.process_btn.grid(row=2, column=0, padx=16, pady=(0, 16), sticky="ew")
+        self.process_btn.grid(row=4, column=0, padx=16, pady=(0, 16), sticky="ew")
 
     # Analytics Badges Card
     def _build_badges_card(self, parent):
@@ -311,6 +336,10 @@ class App(ctk.CTk):
             text="Select a video to begin", text_color=MUTED_TEXT
         )
 
+    def _on_mode_changed(self, value: str) -> None:
+        """Update the description label when the user picks a different mode."""
+        self.mode_desc_label.configure(text=MODE_DESCRIPTIONS.get(value, ""))
+
     def _set_state_file_selected(self):
         filename = os.path.basename(self.video_path)
         self.chip_label.configure(text=filename)
@@ -334,7 +363,7 @@ class App(ctk.CTk):
         self.status_label.configure(text="Done!", text_color=SUCCESS)
 
         # Populate results card
-        if mode in ("rallies_only", "full_and_rallies"):
+        if mode in (MODE_SPLIT_RALLIES,):
             badge_text = (
                 f"{rally_count} long {'rally' if rally_count == 1 else 'rallies'}"
                 if rally_count > 0
@@ -402,9 +431,9 @@ class App(ctk.CTk):
 
         try:
             mode_map = {
-                "Full Analytics": "full",
-                "Rallies Only": "rallies_only",
-                "Full + Rallies": "full_and_rallies",
+                "Video Analysis": MODE_VIDEO_ANALYSIS,
+                "Split Rallies":  MODE_SPLIT_RALLIES,
+                "Detect Serve":   MODE_DETECT_SERVE,
             }
             mode = mode_map[mode_label]
             processor = VideoProcessor(self.video_path, filters, mode=mode)
