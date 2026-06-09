@@ -115,19 +115,26 @@ def setup_logger(run_dir: str) -> None:
 # Video Processor
 # ==============================================================================
 class VideoProcessor:
-    def __init__(self, video_path: str, filters: dict, mode: str = 'full'):
+    def __init__(self, video_path: str, filters: dict, mode: str = MODE_VIDEO_ANALYSIS):
         self.video_path = video_path
         self.filters = self._apply_default_filters(filters)
         self.mode = mode
 
-        self.ball_tracker = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
+        # ── Detectors used by all modes ────────────────────────────────────
+        self.ball_tracker   = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
         self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
-        self.court_mapper = CourtDetector(os.path.join(MODELS_DIR, "court_detection.pt"))
-        self.analytics = Analytics(self.filters)
-        self.serve_detector = ServeDetector()
-        self.serve_analyzer = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=2)
+        self.court_mapper   = CourtDetector(os.path.join(MODELS_DIR, "court_detection.pt"))
         self._cached_kps = None   # court keypoints cache (court is static)
         self._cached_Hmg = None
+
+        # ── Analytics — Video Analysis and Split Rallies only ──────────────
+        if self.mode in (MODE_VIDEO_ANALYSIS, MODE_SPLIT_RALLIES):
+            self.analytics = Analytics(self.filters)
+
+        # ── Serve pipeline — Detect Serve only ────────────────────────────
+        if self.mode == MODE_DETECT_SERVE:
+            self.serve_detector  = ServeDetector()
+            self.serve_analyzer  = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=2)
 
         self.output_dir = self._make_output_dir()
         setup_logger(self.output_dir)
