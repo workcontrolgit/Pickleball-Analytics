@@ -118,3 +118,44 @@ def test_two_bounce_not_satisfied():
     det._bounce_count = 0
     det._net_crossings = 1
     assert det._two_bounce_satisfied() is False
+
+
+# --- Task 5: Rally end detection ---
+
+def test_end_condition_out_of_bounds():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._start_frame = 0
+    # Ball outside bounds for 3+ frames
+    for fi in range(3):
+        det._last_inbounds_frame = 0
+        reason = det._check_end_condition(fi + 1, (600.0, 500.0))  # x=600 > xmax=400
+    assert reason == "out"
+
+def test_end_condition_net_hit():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._start_frame = 0
+    # Ball last seen near net, then absent for NET_HIT_GONE_FRAMES
+    det._last_near_net_frame = 10
+    det._last_inbounds_frame = 10
+    reason = det._check_end_condition(10 + RallyDetector.NET_HIT_GONE_FRAMES, None)
+    assert reason == "net"
+
+def test_end_condition_fault():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._start_frame = 0
+    # Ball absent for FAULT_GONE_FRAMES with no near-net context
+    det._last_near_net_frame = None
+    det._last_inbounds_frame = 0
+    reason = det._check_end_condition(RallyDetector.FAULT_GONE_FRAMES, None)
+    assert reason == "fault"
+
+def test_no_end_condition_when_active():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._start_frame = 0
+    det._last_inbounds_frame = 10
+    reason = det._check_end_condition(11, (200.0, 500.0))
+    assert reason is None
