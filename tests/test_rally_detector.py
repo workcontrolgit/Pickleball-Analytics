@@ -45,3 +45,38 @@ def test_court_bounds_accepted_within_ratio():
     det._validate_and_set_court_bounds(first)
     det._validate_and_set_court_bounds(second)
     assert det._court_bounds == second
+
+
+# --- Task 3: Net crossing and ball-in-bounds detection ---
+
+def _make_det_with_court(net_y=500.0):
+    det = RallyDetector(fps=30)
+    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
+    det._net_y = net_y
+    return det
+
+def test_ball_in_bounds_inside():
+    det = _make_det_with_court()
+    assert det._ball_in_bounds((200.0, 500.0)) is True
+
+def test_ball_in_bounds_outside():
+    det = _make_det_with_court()
+    assert det._ball_in_bounds((500.0, 500.0)) is False  # x > xmax=400
+
+def test_ball_in_bounds_none():
+    det = _make_det_with_court()
+    assert det._ball_in_bounds(None) is False
+
+def test_net_crossing_detected():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._ball_last_side = "near"
+    det._update_net_crossing((200.0, 300.0))   # y=300 < net_y=500 → "far" side
+    assert det._net_crossings == 1
+
+def test_no_crossing_same_side():
+    det = _make_det_with_court(net_y=500.0)
+    det.state = det.OPEN_PLAY
+    det._ball_last_side = "near"
+    det._update_net_crossing((200.0, 700.0))   # still near side (y > net_y)
+    assert det._net_crossings == 0
