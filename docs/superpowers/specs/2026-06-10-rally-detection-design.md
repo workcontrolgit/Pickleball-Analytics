@@ -168,12 +168,31 @@ VideoProcessor (MODE_CLIP_FROM_REPORT)
 
 ---
 
+## Shared Court Line Handling (Tennis + Pickleball)
+
+Amateur recordings frequently use tennis courts with pickleball lines painted or taped on top. The court detection model may lock onto tennis baseline/service box corners instead of pickleball keypoints, producing a homography that maps to a tennis-sized court (~3× larger area). This silently breaks out-of-bounds detection and kitchen/net position.
+
+### Court Bounds Sanity Check
+
+Every time `update_court_bounds_from_keypoints()` proposes new bounds, validate them before accepting:
+
+1. **Aspect ratio**: pickleball court is 20ft × 44ft (width:length ≈ 0.45). Tennis is 36ft × 78ft (same ratio). Ratio alone cannot discriminate — use area instead.
+2. **Area check**: compute pixel area of the proposed bounds in bird space. If the new area is more than **2× the current accepted area** (or more than 2× the first valid area), reject the update and hold the last valid bounds.
+3. **First-frame bootstrap**: on the very first valid keypoint detection, accept the bounds unconditionally and record them as the `_reference_court_area`. All subsequent frames validate against this reference.
+
+This prevents tennis-line contamination from corrupting the homography mid-rally. The existing EMA smoothing still applies to accepted updates.
+
+The sanity check lives in `RallyDetector` (not `analytics.py`) so it is specific to the rally detection path and does not alter existing analytics behaviour.
+
+---
+
 ## Edge Cases
 
 - **Serve not detected**: if `ServeDetector` misses a serve, the rally will not be recorded. This is acceptable — it's a detection-quality issue, not a correctness issue.
 - **Ball tracking gaps**: `RallyDetector` tolerates up to `MAX_GAP_FRAMES = 5` consecutive missing detections before triggering a fault end.
 - **Overlapping serves**: if a serve is detected while a rally is already in `OPEN_PLAY`, the current rally is finalized before starting a new one.
 - **Short rallies (< 2 net crossings)**: recorded in the report with `two_bounce_complete: false`. They appear in the report but are visually flagged.
+- **Shared court lines**: handled by the court bounds sanity check above. If the first detection is a tennis court (no pickleball lines visible), all subsequent frames will be consistent — the error is uniform and the homography still produces a stable bird's-eye view, just at tennis-court scale. Rally detection still works correctly relative to whatever court was detected.
 
 ---
 
