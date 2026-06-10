@@ -144,6 +144,7 @@ class App(ctk.CTk):
         card.grid_rowconfigure(0, weight=1)
         card.grid_rowconfigure(1, weight=0)
 
+        # Placeholder shown before a file is chosen
         self.drop_label = ctk.CTkLabel(
             card,
             text="Drop or browse for\na video file",
@@ -152,6 +153,28 @@ class App(ctk.CTk):
             justify="center",
         )
         self.drop_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+
+        # Info block shown after a file is chosen (hidden initially)
+        self.file_info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.file_name_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                               font=ctk.CTkFont(size=13, weight="bold"),
+                                               text_color=BODY_TEXT, wraplength=260)
+        self.file_folder_label  = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                               font=ctk.CTkFont(size=11),
+                                               text_color=MUTED_TEXT, wraplength=260)
+        self.file_date_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                               font=ctk.CTkFont(size=11),
+                                               text_color=MUTED_TEXT)
+        self.file_size_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                               font=ctk.CTkFont(size=11),
+                                               text_color=MUTED_TEXT)
+        self.file_name_label.pack(anchor="w", pady=(0, 2))
+        self.file_folder_label.pack(anchor="w")
+        self.file_date_label.pack(anchor="w")
+        self.file_size_label.pack(anchor="w")
+        # hidden until a file is selected
+        self.file_info_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+        self.file_info_frame.grid_remove()
 
         self.browse_btn = ctk.CTkButton(
             card,
@@ -301,6 +324,8 @@ class App(ctk.CTk):
         self.mode_selector.configure(state="disabled")
         self.process_btn.configure(state="disabled")
         self.chip_frame.grid_remove()
+        self.file_info_frame.grid_remove()   # hide info block
+        self.drop_label.grid()               # show placeholder again
         self.progress_bar.set(0)
         self.status_label.configure(
             text="Select a video to begin", text_color=MUTED_TEXT
@@ -311,9 +336,30 @@ class App(ctk.CTk):
         self.mode_desc_label.configure(text=MODE_DESCRIPTIONS.get(value, ""))
 
     def _set_state_file_selected(self):
-        filename = os.path.basename(self.video_path)
+        import os
+        from datetime import datetime
+
+        path = self.video_path
+        filename   = os.path.basename(path)
+        folder     = os.path.dirname(path)
+        size_mb    = os.path.getsize(path) / (1024 * 1024)
+        modified   = datetime.fromtimestamp(os.path.getmtime(path))
+        date_str   = modified.strftime("%Y-%m-%d  %H:%M")
+
+        # Update chip in header
         self.chip_label.configure(text=filename)
         self.chip_frame.grid()
+
+        # Fill info labels
+        self.file_name_label.configure(text=filename)
+        self.file_folder_label.configure(text=folder)
+        self.file_date_label.configure(text=f"Modified: {date_str}")
+        self.file_size_label.configure(text=f"Size: {size_mb:.1f} MB")
+
+        # Swap placeholder for info block
+        self.drop_label.grid_remove()
+        self.file_info_frame.grid()
+
         self.mode_selector.configure(state="normal")
         self.process_btn.configure(state="normal")
         self.status_label.configure(text="Ready to process", text_color=BODY_TEXT)
