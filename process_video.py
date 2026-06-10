@@ -254,7 +254,7 @@ class VideoProcessor:
             logger.bind(total_frames=total_frames, rally_count=rally_count, elapsed_s=elapsed_s).info("run_completed")
             self._report_progress(progress_callback, total_frames, total_frames)
 
-        if self.mode == MODE_SPLIT_RALLIES:
+        if self.mode in (MODE_VIDEO_ANALYSIS, MODE_SPLIT_RALLIES):
             self._clip_long_rallies(total_frames, fps)
 
         if out_path:
