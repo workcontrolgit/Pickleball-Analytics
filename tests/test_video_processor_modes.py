@@ -102,3 +102,32 @@ def test_detect_rallies_has_rally_detector_no_analytics():
         MockRallyDetector.assert_called_once()
         assert hasattr(p, "rally_detector")
         assert not hasattr(p, "analytics")
+
+
+# --- Task 8: MODE_CLIP_FROM_REPORT ---
+
+def test_mode_clip_from_report_constant():
+    from process_video import MODE_CLIP_FROM_REPORT
+    assert MODE_CLIP_FROM_REPORT == "clip_from_report"
+
+def test_clip_from_report_init_no_detectors():
+    """CLIP_FROM_REPORT mode: no detectors or analytics instantiated."""
+    with patch("process_video.BallTracker") as MockBT, \
+         patch("process_video.PlayerTracker") as MockPT, \
+         patch("process_video.CourtDetector") as MockCD, \
+         patch("process_video.Analytics") as MockAnalytics, \
+         patch("process_video.ServeDetector") as MockSD, \
+         patch("process_video.OllamaServeAnalyzer") as MockAnalyzer, \
+         patch("process_video.RallyDetector") as MockRD, \
+         patch("process_video.VideoProcessor._make_output_dir", return_value="/tmp/run"), \
+         patch("process_video.setup_logger"):
+        from process_video import VideoProcessor, MODE_CLIP_FROM_REPORT
+        p = VideoProcessor("fake.mp4", {}, mode=MODE_CLIP_FROM_REPORT,
+                           rally_report_path="/tmp/rally_report.json")
+        MockAnalytics.assert_not_called()
+        MockBT.assert_not_called()
+        MockPT.assert_not_called()
+        MockCD.assert_not_called()
+        MockSD.assert_not_called()
+        MockRD.assert_not_called()
+        assert p.rally_report_path == "/tmp/rally_report.json"

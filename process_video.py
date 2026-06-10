@@ -56,6 +56,10 @@ MODE_DETECT_RALLIES = "detect_rallies"
 # Produces: rally_report.json — one entry per detected rally with start/end frames.
 # No video output. Fast pass.
 
+MODE_CLIP_FROM_REPORT = "clip_from_report"
+# Reads: rally_report.json (path provided at init)
+# Produces: rally_01.mp4, rally_02.mp4, … — one clip per rally in the report.
+
 # ==============================================================================
 # Module‑level constants (easy to tweak and reuse)
 # ==============================================================================
@@ -120,17 +124,20 @@ def setup_logger(run_dir: str) -> None:
 # Video Processor
 # ==============================================================================
 class VideoProcessor:
-    def __init__(self, video_path: str, filters: dict, mode: str = MODE_VIDEO_ANALYSIS):
+    def __init__(self, video_path: str, filters: dict, mode: str = MODE_VIDEO_ANALYSIS,
+                 rally_report_path: Optional[str] = None):
         self.video_path = video_path
         self.filters = self._apply_default_filters(filters)
         self.mode = mode
+        self.rally_report_path = rally_report_path
 
-        # ── Detectors used by all modes ────────────────────────────────────
-        self.ball_tracker   = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
-        self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
-        self.court_mapper   = CourtDetector(os.path.join(MODELS_DIR, "court_detection.pt"))
-        self._cached_kps = None   # court keypoints cache (court is static)
-        self._cached_Hmg = None
+        # ── Detectors used by detection modes (not CLIP_FROM_REPORT) ──────
+        if self.mode != MODE_CLIP_FROM_REPORT:
+            self.ball_tracker   = BallTracker(os.path.join(MODELS_DIR, "ball_tracking.pt"))
+            self.player_tracker = PlayerTracker(os.path.join(MODELS_DIR, "player_tracking.pt"))
+            self.court_mapper   = CourtDetector(os.path.join(MODELS_DIR, "court_detection.pt"))
+            self._cached_kps = None   # court keypoints cache (court is static)
+            self._cached_Hmg = None
 
         # ── Analytics — Video Analysis and Split Rallies only ──────────────
         if self.mode in (MODE_VIDEO_ANALYSIS, MODE_SPLIT_RALLIES):
@@ -146,6 +153,10 @@ class VideoProcessor:
             self.serve_detector  = ServeDetector()
             self.rally_detector  = RallyDetector(fps=30)   # fps updated in process_video
 
+        # ── Clip from report — no detectors needed ────────────────────────
+        if self.mode == MODE_CLIP_FROM_REPORT:
+            pass   # all work done in process_video() via _clip_from_report()
+
         self.output_dir = self._make_output_dir()
         setup_logger(self.output_dir)
         self._start_time = time.time()
@@ -155,6 +166,9 @@ class VideoProcessor:
     # Public API
     # ------------------------------------------------------------------
     def process_video(self, progress_callback=None) -> str:
+        if self.mode == MODE_CLIP_FROM_REPORT:
+            return self._clip_from_report(progress_callback)
+
         cap = self._open_capture(self.video_path)
         total_frames, src_w, src_h, fps = self._read_video_meta(cap)
         out_w, out_h, main_w, be_w, grid_w, panel_w, panel_h = self._compute_layout(src_w, src_h)
@@ -593,3 +607,51 @@ class VideoProcessor:
             json.dump(report, f, indent=2)
         logger.bind(path=report_path, total_rallies=report["total_rallies"]).info("rally_report_saved")
         print(f"Rally report saved: {report_path}")
+
+    def _clip_from_report(self, progress_callback=None) -> str:
+        """Read rally_report.json and write one clip per rally. Returns output dir."""
+        import json
+
+        if not self.rally_report_path or not os.path.isfile(self.rally_report_path):
+            raise RuntimeError(f"rally_report_path not found: {self.rally_report_path}")
+
+        with open(self.rally_report_path) as f:
+            report = json.load(f)
+
+        rallies = report.get("rallies", [])
+        fps = int(report.get("fps", 30))
+        buffer = fps * 2   # 2-second padding on each side
+
+        cap = self._open_capture(self.video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        for idx, rally in enumerate(rallies, start=1):
+            start_frame = max(0, rally["start_frame"] - buffer)
+            end_frame   = min(total_frames - 1, rally["end_frame"] + buffer)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            h, w = frame.shape[:2]
+            clip_path = os.path.join(self.output_dir, f"rally_{idx:02d}.mp4")
+            try:
+                writer = cv2.VideoWriter(clip_path, FOURCC, fps, (w, h))
+                writer.write(frame)
+                for _ in range(end_frame - start_frame):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    writer.write(frame)
+                writer.release()
+                duration_s = round((end_frame - start_frame) / fps, 1)
+                logger.bind(rally_num=idx, clip_path=clip_path, duration_s=duration_s).info("rally_clip_saved")
+                print(f"Saved rally clip: {clip_path} ({duration_s}s)")
+            except Exception:
+                logger.exception(f"Failed to write rally clip {idx}")
+
+            self._report_progress(progress_callback, idx, len(rallies))
+
+        cap.release()
+        return self.output_dir
