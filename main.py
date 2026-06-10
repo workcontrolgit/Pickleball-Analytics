@@ -30,6 +30,7 @@ from process_video import (
     MODE_DETECT_SERVE,
 )
 import threading
+import cv2
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
@@ -44,6 +45,29 @@ SUCCESS     = "#00C49A"
 ERROR       = "#FF4757"
 BODY_TEXT   = "#E0E0E0"
 MUTED_TEXT  = "#6B7280"
+
+
+def _extract_thumbnail(path: str, thumb_w: int = 260, thumb_h: int = 146):
+    """
+    Extract one frame ~1 second into the video and return it as a PIL Image
+    sized to (thumb_w x thumb_h). Returns None if the video cannot be read.
+    """
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps))   # seek to ~1 second
+        ret, frame = cap.read()
+        cap.release()
+        if not ret or frame is None:
+            return None
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        thumb = cv2.resize(frame_rgb, (thumb_w, thumb_h), interpolation=cv2.INTER_AREA)
+        from PIL import Image
+        return Image.fromarray(thumb)
+    except Exception:
+        return None
 
 
 MODE_DESCRIPTIONS = {
@@ -141,8 +165,9 @@ class App(ctk.CTk):
     def _build_file_card(self, parent):
         card = self._make_card(parent, 0, 0)
         card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(0, weight=1)
-        card.grid_rowconfigure(1, weight=0)
+        card.grid_rowconfigure(0, weight=1)  # placeholder / thumbnail
+        card.grid_rowconfigure(1, weight=0)  # file info
+        card.grid_rowconfigure(2, weight=0)  # browse button
 
         # Placeholder shown before a file is chosen
         self.drop_label = ctk.CTkLabel(
@@ -154,26 +179,30 @@ class App(ctk.CTk):
         )
         self.drop_label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
 
+        # Thumbnail shown after a file is chosen (hidden initially)
+        self.thumb_label = ctk.CTkLabel(card, text="")
+        self.thumb_label.grid(row=0, column=0, padx=20, pady=(12, 6), sticky="n")
+        self.thumb_label.grid_remove()
+
         # Info block shown after a file is chosen (hidden initially)
         self.file_info_frame = ctk.CTkFrame(card, fg_color="transparent")
-        self.file_name_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
-                                               font=ctk.CTkFont(size=13, weight="bold"),
-                                               text_color=BODY_TEXT, wraplength=260)
-        self.file_folder_label  = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
-                                               font=ctk.CTkFont(size=11),
-                                               text_color=MUTED_TEXT, wraplength=260)
-        self.file_date_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
-                                               font=ctk.CTkFont(size=11),
-                                               text_color=MUTED_TEXT)
-        self.file_size_label    = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
-                                               font=ctk.CTkFont(size=11),
-                                               text_color=MUTED_TEXT)
+        self.file_name_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                              font=ctk.CTkFont(size=13, weight="bold"),
+                                              text_color=BODY_TEXT, wraplength=260)
+        self.file_folder_label = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                              font=ctk.CTkFont(size=11),
+                                              text_color=MUTED_TEXT, wraplength=260)
+        self.file_date_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                              font=ctk.CTkFont(size=11),
+                                              text_color=MUTED_TEXT)
+        self.file_size_label   = ctk.CTkLabel(self.file_info_frame, text="", anchor="w",
+                                              font=ctk.CTkFont(size=11),
+                                              text_color=MUTED_TEXT)
         self.file_name_label.pack(anchor="w", pady=(0, 2))
         self.file_folder_label.pack(anchor="w")
         self.file_date_label.pack(anchor="w")
         self.file_size_label.pack(anchor="w")
-        # hidden until a file is selected
-        self.file_info_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
+        self.file_info_frame.grid(row=1, column=0, padx=20, pady=(0, 8), sticky="ew")
         self.file_info_frame.grid_remove()
 
         self.browse_btn = ctk.CTkButton(
@@ -185,7 +214,7 @@ class App(ctk.CTk):
             corner_radius=8,
             command=self.select_video,
         )
-        self.browse_btn.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.browse_btn.grid(row=2, column=0, padx=20, pady=(0, 20), sticky="ew")
 
     # Mode Card
     def _build_mode_card(self, parent):
@@ -324,8 +353,9 @@ class App(ctk.CTk):
         self.mode_selector.configure(state="disabled")
         self.process_btn.configure(state="disabled")
         self.chip_frame.grid_remove()
-        self.file_info_frame.grid_remove()   # hide info block
-        self.drop_label.grid()               # show placeholder again
+        self.thumb_label.grid_remove()        # hide thumbnail
+        self.file_info_frame.grid_remove()    # hide info block
+        self.drop_label.grid()                # show placeholder
         self.progress_bar.set(0)
         self.status_label.configure(
             text="Select a video to begin", text_color=MUTED_TEXT
@@ -340,24 +370,35 @@ class App(ctk.CTk):
         from datetime import datetime
 
         path = self.video_path
-        filename   = os.path.basename(path)
-        folder     = os.path.dirname(path)
-        size_mb    = os.path.getsize(path) / (1024 * 1024)
-        modified   = datetime.fromtimestamp(os.path.getmtime(path))
-        date_str   = modified.strftime("%Y-%m-%d  %H:%M")
+        filename = os.path.basename(path)
+        folder   = os.path.dirname(path)
+        size_mb  = os.path.getsize(path) / (1024 * 1024)
+        modified = datetime.fromtimestamp(os.path.getmtime(path))
+        date_str = modified.strftime("%Y-%m-%d  %H:%M")
 
-        # Update chip in header
+        # Header chip
         self.chip_label.configure(text=filename)
         self.chip_frame.grid()
 
-        # Fill info labels
+        # Thumbnail
+        pil_img = _extract_thumbnail(path, thumb_w=260, thumb_h=146)
+        if pil_img is not None:
+            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img,
+                                   size=(260, 146))
+            self.thumb_label.configure(image=ctk_img, text="")
+            self.thumb_label._ctk_image = ctk_img  # prevent GC
+            self.drop_label.grid_remove()
+            self.thumb_label.grid()
+        else:
+            # Fallback: keep placeholder visible, hide thumb
+            self.thumb_label.grid_remove()
+            self.drop_label.grid()
+
+        # File info labels
         self.file_name_label.configure(text=filename)
         self.file_folder_label.configure(text=folder)
         self.file_date_label.configure(text=f"Modified: {date_str}")
         self.file_size_label.configure(text=f"Size: {size_mb:.1f} MB")
-
-        # Swap placeholder for info block
-        self.drop_label.grid_remove()
         self.file_info_frame.grid()
 
         self.mode_selector.configure(state="normal")
