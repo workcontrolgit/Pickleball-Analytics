@@ -559,7 +559,7 @@ class App(ctk.CTk):
 
     def _reveal_results_tall(self, step=0):
         """Taller reveal for rally report (needs room for list + clip button)."""
-        target = 280
+        target = 360
         increment = 20
         delay = 20
         current = step * increment
