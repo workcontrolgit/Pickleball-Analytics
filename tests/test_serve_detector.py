@@ -104,3 +104,29 @@ def test_wildly_large_launch_filtered():
     # Ball jumps 1300px — clearly a false detection
     result = det.update(ServeDetector.STILLNESS_FRAMES, frame, (1450.0, 400.0), players)
     assert result is None, "1300px launch should be filtered as a false detection"
+
+
+def test_false_detection_during_stillness_does_not_reset_count():
+    """Ball position jumping > MAX_LAUNCH_PX during stillness is ignored (scoreboard/noise).
+    Stillness count should keep building despite the wild jump.
+    """
+    det = ServeDetector(fps=30)
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    players = make_players(1, [100, 300, 200, 500])
+
+    # Build 5 frames of stillness near (150, 400)
+    for i in range(5):
+        det.update(i, frame, (150.0, 400.0), players)
+    assert det._still_count == 5
+
+    # Ball jumps 1500px (scoreboard false positive) — should be ignored
+    det.update(5, frame, (1650.0, 400.0), players)
+
+    # Stillness count should be unchanged (still 5, not reset to 1)
+    assert det._still_count == 5, f"False detection should be ignored, still_count={det._still_count}"
+
+    # Continue building stillness — should reach threshold and fire
+    for i in range(6, 6 + ServeDetector.STILLNESS_FRAMES):
+        det.update(i, frame, (150.0, 400.0), players)
+    result = det.update(6 + ServeDetector.STILLNESS_FRAMES, frame, (250.0, 400.0), players)
+    assert result is not None, "Serve should fire after false detection was ignored"

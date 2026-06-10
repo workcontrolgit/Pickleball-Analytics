@@ -248,7 +248,18 @@ class VideoProcessor:
                 # ── Detect Rallies ─────────────────────────────────────────
                 elif self.mode == MODE_DETECT_RALLIES:
                     serve_event = self.serve_detector.update(frame_idx, frame, ball_proj, players)
+                    if serve_event is not None:
+                        logger.bind(frame_idx=frame_idx, player_id=serve_event.player_id).info("serve_detected_rally")
                     self.rally_detector.update(frame_idx, ball_proj, serve_event)
+                    if frame_idx % 100 == 0:
+                        logger.bind(
+                            frame_idx=frame_idx,
+                            ball_proj=ball_proj,
+                            still_pos=self.serve_detector._still_pos,
+                            still_count=self.serve_detector._still_count,
+                            rally_state=self.rally_detector.state,
+                            num_players=len(players),
+                        ).debug("rally_diag")
 
                 frame_idx += 1
                 if frame_idx % 500 == 0 and total_frames > 0:

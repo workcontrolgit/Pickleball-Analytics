@@ -76,8 +76,11 @@ class ServeDetector:
             dist = np.hypot(bx - self._still_pos[0], by - self._still_pos[1])
             if dist <= self.STILLNESS_PX:
                 self._still_count += 1
+            elif dist > self.MAX_LAUNCH_PX:
+                # Wildly far — false positive (scoreboard, noise). Ignore.
+                pass
             else:
-                # Ball moved — check if this is a launch
+                # Ball moved a plausible distance — check if this is a launch
                 if self._still_count >= self.STILLNESS_FRAMES and self._last_ball is not None:
                     launch_dist = np.hypot(bx - self._last_ball[0], by - self._last_ball[1])
                     if self.LAUNCH_PX <= launch_dist <= self.MAX_LAUNCH_PX:
