@@ -85,8 +85,8 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Pickleball Analytics")
-        self.geometry("900x600")
-        self.resizable(False, False)
+        self.geometry("900x720")
+        self.resizable(False, True)
         self.configure(fg_color=BG)
 
         self.video_path = None
@@ -150,7 +150,7 @@ class App(ctk.CTk):
         area.grid_columnconfigure(0, weight=1)
         area.grid_columnconfigure(1, weight=1)
         area.grid_rowconfigure(0, weight=1)
-        area.grid_rowconfigure(1, weight=1)
+        area.grid_rowconfigure(1, weight=2)
 
         self._build_file_card(area)
         self._build_mode_card(area)
