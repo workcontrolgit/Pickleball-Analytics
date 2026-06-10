@@ -1,24 +1,20 @@
 """
 Rally detection module
 
-Purpose
--------
-Detects pickleball rallies anchored to serve events.
-Counts exchanges (direction reversals of ball travel) as a proxy for shots.
-Works with raw frame pixel coordinates — no court homography required.
-
 Algorithm
 ---------
-1. Wait for a ServeCandidate event → rally starts.
-2. Track ball position. When ball travels MIN_TRAVEL_PX pixels from an anchor
-   point and then reverses direction, count one exchange. Reset anchor.
-3. Rally ends when ball is missing for FAULT_FRAMES consecutive frames.
+A rally is a continuous period of ball activity separated by gaps where the ball
+is not detected. No court detection, serve detection, or direction tracking required.
+
+1. When ball first appears → rally starts.
+2. While ball is detected → rally continues (short gaps tolerated).
+3. When ball missing for FAULT_FRAMES consecutive frames → rally ends.
+4. Rallies shorter than MIN_RALLY_FRAMES are discarded (noise / scoreboard hits).
 
 Inputs (per frame via update())
 ------
-- frame_idx:   int
-- ball_proj:   Optional[tuple]  — (x, y) ball position (pixel coords)
-- serve_event                   — ServeCandidate or None
+- frame_idx:  int
+- ball_proj:  Optional[tuple]  — (x, y) ball position; None if not detected
 
 Outputs
 -------
@@ -37,8 +33,7 @@ class RallyRecord:
     start_frame: int
     end_frame: int
     fps: float
-    exchanges: int     # number of direction reversals (proxy for shots)
-    end_reason: str    # "fault"
+    end_reason: str    # "fault" | "video_end"
 
     @property
     def start_sec(self) -> float:
@@ -57,9 +52,8 @@ class RallyDetector:
     IDLE   = "idle"
     ACTIVE = "active"
 
-    FAULT_FRAMES      = 45   # 1.5 s of missing ball → rally over
-    MIN_TRAVEL_PX     = 60   # min pixels to establish a travel direction
-    EXCHANGE_COOLDOWN_F = 20 # min frames between valid exchanges (debounce)
+    FAULT_FRAMES     = 45   # 1.5 s of missing ball → rally over
+    MIN_RALLY_FRAMES = 30   # ignore segments shorter than 1 s (noise)
 
     def __init__(self, fps: float = 30):
         self._fps = fps
@@ -71,29 +65,24 @@ class RallyDetector:
     # Public API
     # ------------------------------------------------------------------
 
-    def update(
-        self,
-        frame_idx: int,
-        ball_proj: Optional[tuple],
-        serve_event,               # ServeCandidate | None
-    ) -> None:
-        """Process one frame. Mutates internal state; emits RallyRecord on end."""
+    def update(self, frame_idx: int, ball_proj: Optional[tuple]) -> None:
+        """Process one frame."""
         if self.state == self.IDLE:
-            if serve_event is not None:
+            if ball_proj is not None:
                 self.state = self.ACTIVE
-                self._start_frame = serve_event.frame_idx
-                self._ball_anchor = serve_event.ball_pos
+                self._start_frame = frame_idx
+                self._last_ball_frame = frame_idx
+                self._missing = 0
             return
 
-        # ACTIVE state
-        if ball_proj is None:
-            self._missing_count += 1
-            if self._missing_count >= self.FAULT_FRAMES:
-                self._finalize(frame_idx, "fault")
-            return
-
-        self._missing_count = 0
-        self._update_exchanges(frame_idx, ball_proj)
+        # ACTIVE
+        if ball_proj is not None:
+            self._missing = 0
+            self._last_ball_frame = frame_idx
+        else:
+            self._missing += 1
+            if self._missing >= self.FAULT_FRAMES:
+                self._finalize(self._last_ball_frame, "fault")
 
     def get_rallies(self) -> list[RallyRecord]:
         return list(self._rallies)
@@ -107,14 +96,13 @@ class RallyDetector:
             "total_rallies": len(rallies),
             "rallies": [
                 {
-                    "rally_num":   r.rally_num,
-                    "start_frame": r.start_frame,
-                    "end_frame":   r.end_frame,
-                    "start_sec":   round(r.start_sec, 3),
-                    "end_sec":     round(r.end_sec, 3),
+                    "rally_num":    r.rally_num,
+                    "start_frame":  r.start_frame,
+                    "end_frame":    r.end_frame,
+                    "start_sec":    round(r.start_sec, 3),
+                    "end_sec":      round(r.end_sec, 3),
                     "duration_sec": round(r.duration_sec, 3),
-                    "exchanges":   r.exchanges,
-                    "end_reason":  r.end_reason,
+                    "end_reason":   r.end_reason,
                 }
                 for r in rallies
             ],
@@ -122,49 +110,23 @@ class RallyDetector:
         }
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal
     # ------------------------------------------------------------------
 
-    def _update_exchanges(self, frame_idx: int, ball_proj: tuple) -> None:
-        """Detect ball direction reversals and increment _exchanges."""
-        if self._ball_anchor is None:
-            self._ball_anchor = ball_proj
-            return
-
-        bx, _ = ball_proj
-        ax, _ = self._ball_anchor
-        dx = bx - ax
-
-        if abs(dx) < self.MIN_TRAVEL_PX:
-            return  # not enough travel yet
-
-        new_dir = 1 if dx > 0 else -1
-
-        if self._travel_dir is not None and new_dir != self._travel_dir:
-            # Direction reversed — count as exchange if past cooldown
-            if frame_idx - self._last_exchange_frame >= self.EXCHANGE_COOLDOWN_F:
-                self._exchanges += 1
-                self._last_exchange_frame = frame_idx
-
-        self._travel_dir = new_dir
-        self._ball_anchor = ball_proj  # reset anchor to current position
-
     def _finalize(self, end_frame: int, end_reason: str) -> None:
-        self._rallies.append(RallyRecord(
-            rally_num=len(self._rallies) + 1,
-            start_frame=self._start_frame,
-            end_frame=end_frame,
-            fps=self._fps,
-            exchanges=self._exchanges,
-            end_reason=end_reason,
-        ))
+        duration = end_frame - self._start_frame
+        if duration >= self.MIN_RALLY_FRAMES:
+            self._rallies.append(RallyRecord(
+                rally_num=len(self._rallies) + 1,
+                start_frame=self._start_frame,
+                end_frame=end_frame,
+                fps=self._fps,
+                end_reason=end_reason,
+            ))
         self.state = self.IDLE
         self._reset()
 
     def _reset(self) -> None:
         self._start_frame: Optional[int] = None
-        self._exchanges: int = 0
-        self._missing_count: int = 0
-        self._ball_anchor: Optional[tuple] = None
-        self._travel_dir: Optional[int] = None   # +1 = right, -1 = left
-        self._last_exchange_frame: int = -9999
+        self._last_ball_frame: Optional[int] = None
+        self._missing: int = 0
