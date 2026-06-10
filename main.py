@@ -123,7 +123,6 @@ class App(ctk.CTk):
 
         self._build_file_card(area)
         self._build_mode_card(area)
-        self._build_badges_card(area)
         self._build_results_card(area)
 
     def _make_card(self, parent, row, col, **kwargs):
@@ -217,41 +216,12 @@ class App(ctk.CTk):
         )
         self.process_btn.grid(row=4, column=0, padx=16, pady=(0, 16), sticky="ew")
 
-    # Analytics Badges Card
-    def _build_badges_card(self, parent):
-        card = self._make_card(parent, 1, 0)
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_columnconfigure(1, weight=1)
-        card.grid_rowconfigure(0, weight=0)
-        card.grid_rowconfigure(1, weight=1)
-        card.grid_rowconfigure(2, weight=1)
-
-        ctk.CTkLabel(
-            card,
-            text="Analytics (Always Included)",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=BODY_TEXT,
-        ).grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 8), sticky="w")
-
-        badge_data = [
-            ("Player Heatmap", "#155E75", 1, 0),
-            ("Ball Heatmap",   "#4F46E5", 1, 1),
-            ("Kitchen Detection", "#B45309", 2, 0),
-            ("Rally Length",   "#7C3AED", 2, 1),
-        ]
-        for text, color, row, col in badge_data:
-            pill = ctk.CTkFrame(card, fg_color=color, corner_radius=14)
-            pill.grid(row=row, column=col, padx=10, pady=8, sticky="ew")
-            ctk.CTkLabel(
-                pill,
-                text=text,
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="white",
-            ).pack(padx=10, pady=7)
-
     # Results Card
     def _build_results_card(self, parent):
-        self.results_card = self._make_card(parent, 1, 1, height=0)
+        self.results_card = self._make_card(parent, 1, 0, height=0)
+        self.results_card.grid(
+            row=1, column=0, columnspan=2, padx=8, pady=8, sticky="nsew"
+        )
         self.results_card.grid_propagate(False)
         self.results_card.grid_columnconfigure(0, weight=1)
 
@@ -355,26 +325,36 @@ class App(ctk.CTk):
         self.progress_bar.set(0)
         self.status_label.configure(text="Analyzing\u2026", text_color=MUTED_TEXT)
 
-    def _set_state_complete(self, rally_count, out_dir, mode):
+    def _set_state_complete(self, rally_count, serve_count, serve_avg, out_dir, mode):
         self.browse_btn.configure(state="normal")
         self.mode_selector.configure(state="normal")
         self.process_btn.configure(state="normal")
         self.progress_bar.set(1.0)
         self.status_label.configure(text="Done!", text_color=SUCCESS)
 
-        # Populate results card
-        if mode in (MODE_SPLIT_RALLIES,):
+        if mode == MODE_VIDEO_ANALYSIS:
+            badge_text = "Output saved"
+        elif mode == MODE_SPLIT_RALLIES:
             badge_text = (
-                f"{rally_count} long {'rally' if rally_count == 1 else 'rallies'}"
+                f"{rally_count} long {'rally' if rally_count == 1 else 'rallies'} found"
                 if rally_count > 0
                 else "No long rallies detected"
             )
+        elif mode == MODE_DETECT_SERVE:
+            badge_text = (
+                (
+                    f"{serve_count} {'serve' if serve_count == 1 else 'serves'} detected"
+                    f" · avg score {serve_avg}/10"
+                )
+                if serve_count > 0
+                else "No serves detected"
+            )
         else:
             badge_text = "Processing complete"
+
         self.rally_badge_label.configure(text=badge_text)
         self.output_path_label.configure(text=out_dir)
         self.out_dir = out_dir
-
         self._reveal_results()
 
     def _set_state_error(self, error_msg):
@@ -439,11 +419,16 @@ class App(ctk.CTk):
             processor = VideoProcessor(self.video_path, filters, mode=mode)
             processor.process_video(progress_callback=update_progress)
 
-            rally_count = len(processor.analytics._long_rallies)
+            rally_count   = len(processor.analytics._long_rallies) if hasattr(processor, "analytics") else 0
+            serve_results = processor.serve_analyzer.get_results() if hasattr(processor, "serve_analyzer") else []
+            serve_count   = len(serve_results)
+            serve_avg     = round(sum(r.score for r in serve_results) / serve_count, 1) if serve_count > 0 else 0
             out_dir = processor.output_dir
 
             self.after(
-                0, lambda: self._set_state_complete(rally_count, out_dir, mode)
+                0,
+                lambda rc=rally_count, sc=serve_count, sa=serve_avg, od=out_dir, m=mode:
+                    self._set_state_complete(rc, sc, sa, od, m),
             )
         except Exception as e:
             err = str(e)
