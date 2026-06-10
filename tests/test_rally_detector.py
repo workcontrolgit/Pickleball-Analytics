@@ -80,3 +80,41 @@ def test_no_crossing_same_side():
     det._ball_last_side = "near"
     det._update_net_crossing((200.0, 700.0))   # still near side (y > net_y)
     assert det._net_crossings == 0
+
+
+# --- Task 4: Bounce detection with net-crossing fallback ---
+
+def test_bounce_detected_on_y2_reversal():
+    """Ball y2 rises then falls → local maximum = bounce."""
+    det = RallyDetector(fps=30)
+    # Feed increasing y2 (ball falling) then decreasing (ball rising after bounce)
+    for y2 in [300.0, 320.0, 340.0, 355.0, 360.0]:   # falling
+        det._update_bounce_detection(y2)
+    for y2 in [350.0, 330.0]:                          # rising — bounce happened
+        det._update_bounce_detection(y2)
+    assert det._bounce_count >= 1
+
+def test_no_bounce_on_monotone_fall():
+    det = RallyDetector(fps=30)
+    for y2 in [200.0, 250.0, 300.0, 350.0, 400.0]:
+        det._update_bounce_detection(y2)
+    assert det._bounce_count == 0
+
+def test_two_bounce_satisfied_via_bounces():
+    det = RallyDetector(fps=30)
+    det._bounce_count = 2
+    det._net_crossings = 1
+    assert det._two_bounce_satisfied() is True
+
+def test_two_bounce_satisfied_via_net_crossings_fallback():
+    """If bounce count is low but net crossings >= 2, use crossings as proxy."""
+    det = RallyDetector(fps=30)
+    det._bounce_count = 0    # noisy tracking — no bounces detected
+    det._net_crossings = 2   # but two crossings seen → implies two bounces occurred
+    assert det._two_bounce_satisfied() is True
+
+def test_two_bounce_not_satisfied():
+    det = RallyDetector(fps=30)
+    det._bounce_count = 0
+    det._net_crossings = 1
+    assert det._two_bounce_satisfied() is False
