@@ -248,23 +248,7 @@ class VideoProcessor:
                 # ── Detect Rallies ─────────────────────────────────────────
                 elif self.mode == MODE_DETECT_RALLIES:
                     serve_event = self.serve_detector.update(frame_idx, frame, ball_proj, players)
-                    # Derive net_y from cached court keypoints if available
-                    net_y = None
-                    court_bounds = None
-                    if self._cached_kps is not None and self._cached_Hmg is not None:
-                        pts = np.array(self._cached_kps, dtype=np.float32).reshape(-1, 1, 2)
-                        proj_kps = cv2.perspectiveTransform(pts, self._cached_Hmg).reshape(-1, 2)
-                        if proj_kps.shape[0] >= 12:
-                            row1_y = float(np.mean(proj_kps[3:6, 1]))
-                            row2_y = float(np.mean(proj_kps[6:9, 1]))
-                            net_y = (row1_y + row2_y) / 2.0
-                            xmin = float(np.min(proj_kps[:, 0]))
-                            xmax = float(np.max(proj_kps[:, 0]))
-                            ymin = float(np.min(proj_kps[:, 1]))
-                            ymax = float(np.max(proj_kps[:, 1]))
-                            court_bounds = (xmin, ymin, xmax, ymax)
-                    ball_y2 = float(ball_bbox[3]) if ball_bbox is not None else None
-                    self.rally_detector.update(frame_idx, ball_proj, ball_y2, serve_event, net_y, court_bounds)
+                    self.rally_detector.update(frame_idx, ball_proj, serve_event)
 
                 frame_idx += 1
                 if frame_idx % 500 == 0 and total_frames > 0:
@@ -300,7 +284,7 @@ class VideoProcessor:
             # ── Detect Rallies finalization ────────────────────────────────
             elif self.mode == MODE_DETECT_RALLIES:
                 if self.rally_detector.state != RallyDetector.IDLE:
-                    self.rally_detector._finalize_rally(frame_idx, "fault")
+                    self.rally_detector._finalize(frame_idx, "fault")
                 self.rally_detector._fps = fps
                 self._save_rally_report()
 

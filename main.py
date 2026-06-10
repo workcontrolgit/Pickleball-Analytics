@@ -498,10 +498,10 @@ class App(ctk.CTk):
 
         lines = []
         for r in rallies:
-            flag = "" if r["two_bounce_complete"] else " !"
+            exchanges = r.get("exchanges", 0)
             lines.append(
                 f"Rally {r['rally_num']:>2}  {r['start_sec']:6.1f}s - {r['end_sec']:6.1f}s"
-                f"  ({r['duration_sec']:.1f}s)  {r['end_reason']}{flag}"
+                f"  ({r['duration_sec']:.1f}s)  {exchanges} exchanges"
             )
         self._rally_list_box.insert("end", "\n".join(lines))
         self._rally_list_box.configure(state="disabled")

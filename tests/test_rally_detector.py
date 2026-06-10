@@ -1,5 +1,20 @@
 import pytest
+import numpy as np
 from rally_detector import RallyDetector, RallyRecord
+from serve_detector import ServeCandidate
+
+
+def _make_serve(frame_idx=0, ball_pos=(300.0, 400.0)):
+    return ServeCandidate(
+        frame_idx=frame_idx,
+        timestamp_sec=frame_idx / 30.0,
+        player_id=1,
+        ball_pos=ball_pos,
+        frame_small=np.zeros((720, 1280, 3), dtype=np.uint8),
+    )
+
+
+# --- RallyRecord ---
 
 def test_rally_record_fields():
     r = RallyRecord(
@@ -7,13 +22,15 @@ def test_rally_record_fields():
         start_frame=10,
         end_frame=50,
         fps=30,
-        net_crossings=4,
-        end_reason="out",
-        two_bounce_complete=True,
+        exchanges=3,
+        end_reason="fault",
     )
     assert r.start_sec == pytest.approx(10 / 30)
     assert r.end_sec == pytest.approx(50 / 30)
-    assert r.duration_sec == pytest.approx((50 - 10) / 30)
+    assert r.duration_sec == pytest.approx(40 / 30)
+
+
+# --- Initial state ---
 
 def test_detector_starts_idle():
     det = RallyDetector(fps=30)
@@ -21,224 +38,125 @@ def test_detector_starts_idle():
     assert det.get_rallies() == []
 
 
-# --- Task 2: Court bounds sanity check ---
-
-def test_court_bounds_accepted_on_first_call():
+def test_no_rally_without_serve():
     det = RallyDetector(fps=30)
-    bounds = (0.0, 0.0, 100.0, 200.0)   # area = 100*200 = 20000
-    det._validate_and_set_court_bounds(bounds)
-    assert det._court_bounds == bounds
-    assert det._reference_court_area == pytest.approx(20000.0)
+    for fi in range(100):
+        det.update(fi, (200.0, 400.0), None)
+    assert det.get_rallies() == []
 
-def test_court_bounds_rejected_when_too_large():
+
+# --- Rally start ---
+
+def test_rally_starts_on_serve():
     det = RallyDetector(fps=30)
-    small = (0.0, 0.0, 100.0, 200.0)    # area 20000
-    big   = (0.0, 0.0, 300.0, 200.0)    # area 60000 — 3× reference
-    det._validate_and_set_court_bounds(small)
-    det._validate_and_set_court_bounds(big)
-    assert det._court_bounds == small    # rejected — held previous
+    det.update(10, (300.0, 400.0), _make_serve(frame_idx=10))
+    assert det.state == RallyDetector.ACTIVE
 
-def test_court_bounds_accepted_within_ratio():
+
+def test_ball_position_ignored_before_serve():
+    """Ball detected before serve → still IDLE."""
     det = RallyDetector(fps=30)
-    first  = (0.0, 0.0, 100.0, 200.0)  # area 20000
-    second = (0.0, 0.0, 110.0, 200.0)  # area 22000 — 1.1× OK
-    det._validate_and_set_court_bounds(first)
-    det._validate_and_set_court_bounds(second)
-    assert det._court_bounds == second
+    det.update(5, (300.0, 400.0), None)
+    assert det.state == RallyDetector.IDLE
 
 
-# --- Task 3: Net crossing and ball-in-bounds detection ---
+# --- Exchange counting ---
 
-def _make_det_with_court(net_y=500.0):
+def test_exchange_counted_on_direction_reversal():
+    """Ball travels left 80px then right 80px → 1 exchange."""
     det = RallyDetector(fps=30)
-    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
-    det._net_y = net_y
-    return det
+    det.update(0, (300.0, 400.0), _make_serve(0, (300.0, 400.0)))
+    det.update(1, (220.0, 400.0), None)   # left 80px → direction = LEFT established
+    det.update(2, (300.0, 400.0), None)   # right 80px from anchor → reversal → exchange
+    assert det._exchanges == 1
 
-def test_ball_in_bounds_inside():
-    det = _make_det_with_court()
-    assert det._ball_in_bounds((200.0, 500.0)) is True
 
-def test_ball_in_bounds_outside():
-    det = _make_det_with_court()
-    assert det._ball_in_bounds((500.0, 500.0)) is False  # x > xmax=400
-
-def test_ball_in_bounds_none():
-    det = _make_det_with_court()
-    assert det._ball_in_bounds(None) is False
-
-def test_ball_in_bounds_no_court_detection():
-    """When court detection failed (bounds unknown), any detected ball is treated as in-bounds.
-    Prevents rallies from ending immediately as 'out' when court homography is unavailable.
-    """
+def test_no_exchange_before_min_travel():
+    """Ball moves less than MIN_TRAVEL_PX — no exchange even if it reverses."""
     det = RallyDetector(fps=30)
-    # Court bounds never set — court detection failed for this video
-    assert det._court_bounds is None
-    assert det._ball_in_bounds((200.0, 500.0)) is True
-    assert det._ball_in_bounds((50.0, 50.0)) is True
-
-def test_net_crossing_detected():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._ball_last_side = "near"
-    det._update_net_crossing((200.0, 300.0))   # y=300 < net_y=500 → "far" side
-    assert det._net_crossings == 1
-
-def test_no_crossing_same_side():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._ball_last_side = "near"
-    det._update_net_crossing((200.0, 700.0))   # still near side (y > net_y)
-    assert det._net_crossings == 0
+    det.update(0, (300.0, 400.0), _make_serve(0, (300.0, 400.0)))
+    det.update(1, (270.0, 400.0), None)   # only 30px — below MIN_TRAVEL_PX
+    det.update(2, (300.0, 400.0), None)   # back — still below threshold
+    assert det._exchanges == 0
 
 
-# --- Task 4: Bounce detection with net-crossing fallback ---
-
-def test_bounce_detected_on_y2_reversal():
-    """Ball y2 rises then falls → local maximum = bounce."""
+def test_exchange_cooldown_prevents_double_count():
+    """Second reversal within EXCHANGE_COOLDOWN_F frames is suppressed."""
     det = RallyDetector(fps=30)
-    # Feed increasing y2 (ball falling) then decreasing (ball rising after bounce)
-    for y2 in [300.0, 320.0, 340.0, 355.0, 360.0]:   # falling
-        det._update_bounce_detection(y2)
-    for y2 in [350.0, 330.0]:                          # rising — bounce happened
-        det._update_bounce_detection(y2)
-    assert det._bounce_count >= 1
+    det.update(0, (300.0, 400.0), _make_serve(0, (300.0, 400.0)))
+    det.update(1, (220.0, 400.0), None)   # LEFT established
+    det.update(2, (300.0, 400.0), None)   # RIGHT reversal → exchange #1 at frame 2
+    det.update(3, (220.0, 400.0), None)   # LEFT reversal at frame 3 — within cooldown
+    assert det._exchanges == 1
 
-def test_no_bounce_on_monotone_fall():
+
+def test_multiple_exchanges_counted():
+    """Each full back-and-forth beyond cooldown window is counted."""
     det = RallyDetector(fps=30)
-    for y2 in [200.0, 250.0, 300.0, 350.0, 400.0]:
-        det._update_bounce_detection(y2)
-    assert det._bounce_count == 0
+    det.update(0, (300.0, 400.0), _make_serve(0, (300.0, 400.0)))
+    det.update(1,  (220.0, 400.0), None)   # LEFT (80px)
+    det.update(25, (300.0, 400.0), None)   # RIGHT reversal → exchange #1
+    det.update(50, (220.0, 400.0), None)   # LEFT reversal → exchange #2
+    det.update(75, (300.0, 400.0), None)   # RIGHT reversal → exchange #3
+    assert det._exchanges == 3
 
-def test_two_bounce_satisfied_via_bounces():
+
+# --- Fault / end conditions ---
+
+def test_fault_ends_rally():
+    """Ball missing for FAULT_FRAMES consecutive frames → rally finalized."""
     det = RallyDetector(fps=30)
-    det._bounce_count = 2
-    det._net_crossings = 1
-    assert det._two_bounce_satisfied() is True
+    det.update(0, (300.0, 400.0), _make_serve(0))
+    for fi in range(1, RallyDetector.FAULT_FRAMES + 1):
+        det.update(fi, None, None)
+    assert det.state == RallyDetector.IDLE
+    assert len(det.get_rallies()) == 1
+    assert det.get_rallies()[0].end_reason == "fault"
 
-def test_two_bounce_satisfied_via_net_crossings_fallback():
-    """If bounce count is low but net crossings >= 2, use crossings as proxy."""
+
+def test_ball_reappearance_resets_missing_counter():
+    """Missing ball counter resets when ball is detected — rally stays active."""
     det = RallyDetector(fps=30)
-    det._bounce_count = 0    # noisy tracking — no bounces detected
-    det._net_crossings = 2   # but two crossings seen → implies two bounces occurred
-    assert det._two_bounce_satisfied() is True
-
-def test_two_bounce_not_satisfied():
-    det = RallyDetector(fps=30)
-    det._bounce_count = 0
-    det._net_crossings = 1
-    assert det._two_bounce_satisfied() is False
+    det.update(0, (300.0, 400.0), _make_serve(0))
+    for fi in range(1, RallyDetector.FAULT_FRAMES - 1):
+        det.update(fi, None, None)   # missing, but not enough to fault
+    det.update(RallyDetector.FAULT_FRAMES, (300.0, 400.0), None)  # ball back
+    assert det.state == RallyDetector.ACTIVE
 
 
-# --- Task 5: Rally end detection ---
-
-def test_end_condition_out_of_bounds():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._start_frame = 0
-    # Ball outside bounds for 3+ frames
-    for fi in range(3):
-        det._last_inbounds_frame = 0
-        reason = det._check_end_condition(fi + 1, (600.0, 500.0))  # x=600 > xmax=400
-    assert reason == "out"
-
-def test_end_condition_net_hit():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._start_frame = 0
-    # Ball last seen near net, then absent for NET_HIT_GONE_FRAMES
-    det._last_near_net_frame = 10
-    det._last_inbounds_frame = 10
-    reason = det._check_end_condition(10 + RallyDetector.NET_HIT_GONE_FRAMES, None)
-    assert reason == "net"
-
-def test_end_condition_fault():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._start_frame = 0
-    # Ball absent for FAULT_GONE_FRAMES with no near-net context
-    det._last_near_net_frame = None
-    det._last_inbounds_frame = 0
-    reason = det._check_end_condition(RallyDetector.FAULT_GONE_FRAMES, None)
-    assert reason == "fault"
-
-def test_no_end_condition_when_active():
-    det = _make_det_with_court(net_y=500.0)
-    det.state = det.OPEN_PLAY
-    det._start_frame = 0
-    det._last_inbounds_frame = 10
-    reason = det._check_end_condition(11, (200.0, 500.0))
-    assert reason is None
-
-
-# --- Task 6: Full FSM update() and rally finalization ---
-
-from serve_detector import ServeCandidate
-import numpy as np
-
-def _make_serve_event(frame_idx=0):
-    return ServeCandidate(
-        frame_idx=frame_idx,
-        timestamp_sec=frame_idx / 30.0,
-        player_id=1,
-        ball_pos=(200.0, 800.0),
-        frame_small=np.zeros((720, 1280, 3), dtype=np.uint8),
-    )
-
-def _run_full_rally(det, start=0, length=90):
-    """Simulate a complete rally: serve → 2 net crossings → ball OOB."""
-    net_y = 500.0
-    det._net_y = net_y
-    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
-
-    # Serve at frame `start`
-    det.update(start, (200.0, 800.0), 700.0, _make_serve_event(start), net_y, None)
-
-    # Ball moves to far side (1st crossing)
-    for fi in range(start + 1, start + 20):
-        det.update(fi, (200.0, 300.0), 300.0, None, net_y, None)
-
-    # Ball bounces far side (simulate y2 peak)
-    for y2 in [280.0, 300.0, 320.0, 340.0, 345.0, 330.0, 310.0]:
-        det.update(start + 20, (200.0, 300.0), y2, None, net_y, None)
-
-    # Ball returns (2nd crossing)
-    for fi in range(start + 21, start + 40):
-        det.update(fi, (200.0, 700.0), 600.0, None, net_y, None)
-
-    # Open play — several more crossings
-    for fi in range(start + 40, start + length - 3):
-        side_y = 300.0 if fi % 20 < 10 else 700.0
-        det.update(fi, (200.0, side_y), 400.0, None, net_y, None)
-
-    # Ball goes OOB for 3+ frames
-    for fi in range(start + length - 3, start + length):
-        det.update(fi, (600.0, 500.0), 400.0, None, net_y, None)
+# --- Full rally cycle ---
 
 def test_full_rally_recorded():
+    """Serve → exchanges → fault → one RallyRecord with correct fields."""
     det = RallyDetector(fps=30)
-    _run_full_rally(det, start=10, length=90)
+    det.update(10, (300.0, 400.0), _make_serve(10, (300.0, 400.0)))
+    det.update(11, (220.0, 400.0), None)     # LEFT
+    det.update(35, (300.0, 400.0), None)     # exchange #1
+    det.update(60, (220.0, 400.0), None)     # exchange #2
+    for fi in range(61, 61 + RallyDetector.FAULT_FRAMES):
+        det.update(fi, None, None)
     rallies = det.get_rallies()
     assert len(rallies) == 1
     r = rallies[0]
     assert r.rally_num == 1
     assert r.start_frame == 10
-    assert r.end_reason == "out"
-    assert r.two_bounce_complete is True
+    assert r.exchanges == 2
+    assert r.end_reason == "fault"
+
 
 def test_two_rallies_recorded():
+    """Two serve-to-fault cycles produce two rally records."""
     det = RallyDetector(fps=30)
-    _run_full_rally(det, start=0, length=90)
-    _run_full_rally(det, start=200, length=60)
-    assert len(det.get_rallies()) == 2
-    assert det.get_rallies()[1].rally_num == 2
-
-def test_no_rally_without_serve():
-    det = RallyDetector(fps=30)
-    net_y = 500.0
-    det._net_y = net_y
-    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
-    # Ball in bounds but no serve event
-    for fi in range(100):
-        det.update(fi, (200.0, 400.0), 400.0, None, net_y, None)
-    assert det.get_rallies() == []
+    # First rally
+    det.update(0, (300.0, 400.0), _make_serve(0, (300.0, 400.0)))
+    for fi in range(1, RallyDetector.FAULT_FRAMES + 1):
+        det.update(fi, None, None)
+    # Second rally
+    start2 = RallyDetector.FAULT_FRAMES + 50
+    det.update(start2, (300.0, 400.0), _make_serve(start2, (300.0, 400.0)))
+    for fi in range(start2 + 1, start2 + RallyDetector.FAULT_FRAMES + 1):
+        det.update(fi, None, None)
+    rallies = det.get_rallies()
+    assert len(rallies) == 2
+    assert rallies[0].rally_num == 1
+    assert rallies[1].rally_num == 2
