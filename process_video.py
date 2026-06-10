@@ -476,11 +476,10 @@ class VideoProcessor:
         ph = self.analytics.panel_player_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         bh = self.analytics.panel_ball_heatmap((panel_w, panel_h), bird_reference=bird_reference)
         kd = self.analytics.panel_kitchen_intrusion(None, (panel_w, panel_h))  # players provided via update_counters
-        serve_results = self.serve_analyzer.get_results() if hasattr(self, "serve_analyzer") else []
-        sv = self.analytics.panel_serve_summary(serve_results, (panel_w, panel_h))
+        rl = self.analytics.panel_rally_tempo((panel_w, panel_h))
 
         top = cv2.hconcat([ph, bh])
-        bot = cv2.hconcat([kd, sv])
+        bot = cv2.hconcat([kd, rl])
         grid = cv2.vconcat([top, bot])
 
         w, h = target_size
