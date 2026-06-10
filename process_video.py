@@ -32,6 +32,7 @@ from court_detection import CourtDetector
 from analytics import Analytics
 from serve_detector import ServeDetector
 from serve_analyzer import OllamaServeAnalyzer
+from rally_detector import RallyDetector
 
 # ==============================================================================
 # Processing Modes
@@ -50,6 +51,10 @@ MODE_SPLIT_RALLIES = "split_rallies"
 MODE_DETECT_SERVE = "detect_serve"
 # Produces: serve_report.json — serve candidates scored by Ollama vision.
 #           No video output. Fastest mode.
+
+MODE_DETECT_RALLIES = "detect_rallies"
+# Produces: rally_report.json — one entry per detected rally with start/end frames.
+# No video output. Fast pass.
 
 # ==============================================================================
 # Module‑level constants (easy to tweak and reuse)
@@ -136,6 +141,11 @@ class VideoProcessor:
             self.serve_detector  = ServeDetector()
             self.serve_analyzer  = OllamaServeAnalyzer(model="qwen2.5vl:7b", workers=2)
 
+        # ── Rally detection pipeline — Detect Rallies only ───────────────────
+        if self.mode == MODE_DETECT_RALLIES:
+            self.serve_detector  = ServeDetector()
+            self.rally_detector  = RallyDetector(fps=30)   # fps updated in process_video
+
         self.output_dir = self._make_output_dir()
         setup_logger(self.output_dir)
         self._start_time = time.time()
@@ -159,6 +169,9 @@ class VideoProcessor:
         if self.mode in (MODE_VIDEO_ANALYSIS, MODE_SPLIT_RALLIES):
             self.analytics.set_canvas_size(work_w, work_h)
             self.analytics.set_video_context(total_frames=total_frames, fps=fps)
+
+        if self.mode == MODE_DETECT_RALLIES:
+            self.rally_detector._fps = fps
 
         writer = None
         out_path = None
@@ -218,6 +231,27 @@ class VideoProcessor:
                         logger.bind(frame_idx=frame_idx, player_id=candidate.player_id).info("serve_candidate_detected")
                         self.serve_analyzer.submit(candidate)
 
+                # ── Detect Rallies ─────────────────────────────────────────
+                elif self.mode == MODE_DETECT_RALLIES:
+                    serve_event = self.serve_detector.update(frame_idx, frame, ball_proj, players)
+                    # Derive net_y from cached court keypoints if available
+                    net_y = None
+                    court_bounds = None
+                    if self._cached_kps is not None and self._cached_Hmg is not None:
+                        pts = np.array(self._cached_kps, dtype=np.float32).reshape(-1, 1, 2)
+                        proj_kps = cv2.perspectiveTransform(pts, self._cached_Hmg).reshape(-1, 2)
+                        if proj_kps.shape[0] >= 12:
+                            row1_y = float(np.mean(proj_kps[3:6, 1]))
+                            row2_y = float(np.mean(proj_kps[6:9, 1]))
+                            net_y = (row1_y + row2_y) / 2.0
+                            xmin = float(np.min(proj_kps[:, 0]))
+                            xmax = float(np.max(proj_kps[:, 0]))
+                            ymin = float(np.min(proj_kps[:, 1]))
+                            ymax = float(np.max(proj_kps[:, 1]))
+                            court_bounds = (xmin, ymin, xmax, ymax)
+                    ball_y2 = float(ball_bbox[3]) if ball_bbox is not None else None
+                    self.rally_detector.update(frame_idx, ball_proj, ball_y2, serve_event, net_y, court_bounds)
+
                 frame_idx += 1
                 if frame_idx % 500 == 0 and total_frames > 0:
                     logger.bind(
@@ -248,6 +282,13 @@ class VideoProcessor:
             elif self.mode == MODE_DETECT_SERVE:
                 self.serve_analyzer.shutdown()
                 self._save_serve_report()
+
+            # ── Detect Rallies finalization ────────────────────────────────
+            elif self.mode == MODE_DETECT_RALLIES:
+                if self.rally_detector.state != RallyDetector.IDLE:
+                    self.rally_detector._finalize_rally(frame_idx, "fault")
+                self.rally_detector._fps = fps
+                self._save_rally_report()
 
             rally_count = len(self.analytics._long_rallies) if hasattr(self, "analytics") else 0
             elapsed_s = round(time.time() - self._start_time, 2)
@@ -538,3 +579,17 @@ class VideoProcessor:
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
         logger.bind(path=report_path, total_serves=len(results)).info("serve_report_saved")
+
+    def _save_rally_report(self) -> None:
+        """Write rally_report.json to the run output directory."""
+        import json
+        from datetime import datetime
+
+        report = self.rally_detector.get_report(video_path=self.video_path)
+        report["generated"] = datetime.now().isoformat()
+
+        report_path = os.path.join(self.output_dir, "rally_report.json")
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        logger.bind(path=report_path, total_rallies=report["total_rallies"]).info("rally_report_saved")
+        print(f"Rally report saved: {report_path}")

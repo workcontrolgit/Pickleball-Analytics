@@ -77,3 +77,28 @@ def test_detect_serve_has_serve_detector_no_analytics():
         assert not hasattr(p, "analytics")
         assert hasattr(p, "serve_detector")
         assert hasattr(p, "serve_analyzer")
+
+
+# --- Task 7: MODE_DETECT_RALLIES ---
+
+def test_mode_detect_rallies_constant():
+    from process_video import MODE_DETECT_RALLIES
+    assert MODE_DETECT_RALLIES == "detect_rallies"
+
+def test_detect_rallies_has_rally_detector_no_analytics():
+    """DETECT_RALLIES mode: RallyDetector present, Analytics absent."""
+    with patch("process_video.BallTracker"), \
+         patch("process_video.PlayerTracker"), \
+         patch("process_video.CourtDetector"), \
+         patch("process_video.Analytics") as MockAnalytics, \
+         patch("process_video.ServeDetector"), \
+         patch("process_video.OllamaServeAnalyzer"), \
+         patch("process_video.RallyDetector") as MockRallyDetector, \
+         patch("process_video.VideoProcessor._make_output_dir", return_value="/tmp/run"), \
+         patch("process_video.setup_logger"):
+        from process_video import VideoProcessor, MODE_DETECT_RALLIES
+        p = VideoProcessor("fake.mp4", {}, mode=MODE_DETECT_RALLIES)
+        MockAnalytics.assert_not_called()
+        MockRallyDetector.assert_called_once()
+        assert hasattr(p, "rally_detector")
+        assert not hasattr(p, "analytics")
