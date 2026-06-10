@@ -94,8 +94,6 @@ class App(ctk.CTk):
         self.mode_var = ctk.StringVar(value="Video Analysis")
         self._reveal_id = None
         self._rally_report_path: Optional[str] = None
-        self._clip_btn = None
-        self._rally_list_box = None
 
         self._build_ui()
         self._set_state_idle()
@@ -283,13 +281,14 @@ class App(ctk.CTk):
         )
         self.results_card.grid_propagate(False)
         self.results_card.grid_columnconfigure(0, weight=1)
+        self.results_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             self.results_card,
             text="Results",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=BODY_TEXT,
-        ).grid(row=0, column=0, padx=16, pady=(12, 4), sticky="w")
+        ).grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 4), sticky="w")
 
         # Rally count badge
         self.rally_badge_frame = ctk.CTkFrame(
@@ -302,7 +301,7 @@ class App(ctk.CTk):
             text_color="white",
         )
         self.rally_badge_label.pack(padx=12, pady=6)
-        self.rally_badge_frame.grid(row=1, column=0, padx=16, pady=4, sticky="w")
+        self.rally_badge_frame.grid(row=1, column=0, columnspan=2, padx=16, pady=4, sticky="w")
 
         # Output path
         self.output_path_label = ctk.CTkLabel(
@@ -313,9 +312,9 @@ class App(ctk.CTk):
             wraplength=300,
             justify="left",
         )
-        self.output_path_label.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="w")
+        self.output_path_label.grid(row=2, column=0, columnspan=2, padx=16, pady=(0, 4), sticky="w")
 
-        # Open folder button
+        # Buttons row: Open Folder | Clip Rallies (side by side)
         self.open_folder_btn = ctk.CTkButton(
             self.results_card,
             text="📂 Open Folder",
@@ -325,7 +324,42 @@ class App(ctk.CTk):
             corner_radius=8,
             command=self._open_output_folder,
         )
-        self.open_folder_btn.grid(row=3, column=0, padx=16, pady=(0, 12), sticky="w")
+        self.open_folder_btn.grid(row=3, column=0, padx=(16, 4), pady=(0, 12), sticky="ew")
+
+        self._clip_btn = ctk.CTkButton(
+            self.results_card,
+            text="✂ Clip Rallies",
+            fg_color=SUCCESS,
+            text_color="black",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=8,
+            command=self._on_clip_rallies,
+            state="disabled",
+        )
+        self._clip_btn.grid(row=3, column=1, padx=(4, 16), pady=(0, 12), sticky="ew")
+
+        # Scrollable rally table (hidden until rally detection runs)
+        self._rally_table = ctk.CTkScrollableFrame(
+            self.results_card,
+            height=150,
+            fg_color=BG,
+            corner_radius=8,
+        )
+        self._rally_table.grid(row=4, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="ew")
+        self._rally_table.grid_columnconfigure(0, weight=0, minsize=60)   # Rally #
+        self._rally_table.grid_columnconfigure(1, weight=1)               # Start
+        self._rally_table.grid_columnconfigure(2, weight=1)               # End
+        self._rally_table.grid_columnconfigure(3, weight=1)               # Duration
+        self._rally_table.grid_remove()  # hidden until report is ready
+
+        # Table header
+        for col, text in enumerate(["Rally", "Start", "End", "Duration"]):
+            ctk.CTkLabel(
+                self._rally_table,
+                text=text,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=MUTED_TEXT,
+            ).grid(row=0, column=col, padx=6, pady=(4, 2), sticky="w")
 
     # Zone 3 — Footer
     def _build_footer(self):
@@ -481,44 +515,40 @@ class App(ctk.CTk):
         self.rally_badge_label.configure(text=badge_text)
         self.output_path_label.configure(text=out_dir)
 
-        # Populate rally list textbox
-        if self._rally_list_box is not None:
-            self._rally_list_box.configure(state="normal")
-            self._rally_list_box.delete("1.0", "end")
-        else:
-            self._rally_list_box = ctk.CTkTextbox(
-                self.results_card,
-                height=120,
-                font=ctk.CTkFont(size=11, family="Courier"),
-                fg_color=BG,
+        # Populate scrollable rally table (clear existing data rows first)
+        for widget in self._rally_table.winfo_children():
+            info = widget.grid_info()
+            if info.get("row", 0) > 0:  # keep header row
+                widget.destroy()
+
+        for row_idx, r in enumerate(rallies, start=1):
+            ctk.CTkLabel(
+                self._rally_table,
+                text=f"{r['rally_num']}",
+                font=ctk.CTkFont(size=11),
                 text_color=BODY_TEXT,
-                state="normal",
-            )
-            self._rally_list_box.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
+            ).grid(row=row_idx, column=0, padx=6, pady=1, sticky="w")
+            ctk.CTkLabel(
+                self._rally_table,
+                text=f"{r['start_sec']:.1f}s",
+                font=ctk.CTkFont(size=11),
+                text_color=BODY_TEXT,
+            ).grid(row=row_idx, column=1, padx=6, pady=1, sticky="w")
+            ctk.CTkLabel(
+                self._rally_table,
+                text=f"{r['end_sec']:.1f}s",
+                font=ctk.CTkFont(size=11),
+                text_color=BODY_TEXT,
+            ).grid(row=row_idx, column=2, padx=6, pady=1, sticky="w")
+            ctk.CTkLabel(
+                self._rally_table,
+                text=f"{r['duration_sec']:.1f}s",
+                font=ctk.CTkFont(size=11),
+                text_color=BODY_TEXT,
+            ).grid(row=row_idx, column=3, padx=6, pady=1, sticky="w")
 
-        lines = []
-        for r in rallies:
-            lines.append(
-                f"Rally {r['rally_num']:>2}  {r['start_sec']:6.1f}s - {r['end_sec']:6.1f}s"
-                f"  ({r['duration_sec']:.1f}s)"
-            )
-        self._rally_list_box.insert("end", "\n".join(lines))
-        self._rally_list_box.configure(state="disabled")
-
-        # Clip Rallies button
-        if self._clip_btn is None:
-            self._clip_btn = ctk.CTkButton(
-                self.results_card,
-                text="Clip Rallies",
-                fg_color=SUCCESS,
-                text_color="black",
-                font=ctk.CTkFont(size=13, weight="bold"),
-                corner_radius=8,
-                command=self._on_clip_rallies,
-            )
-            self._clip_btn.grid(row=5, column=0, padx=16, pady=(0, 16), sticky="ew")
-        else:
-            self._clip_btn.configure(state="normal", text="Clip Rallies")
+        self._rally_table.grid()  # show table
+        self._clip_btn.configure(state="normal", text="✂ Clip Rallies")
 
         self._reveal_results_tall()
 
@@ -552,8 +582,7 @@ class App(ctk.CTk):
         )
         self.output_path_label.configure(text=out_dir)
         self.out_dir = out_dir
-        if self._clip_btn:
-            self._clip_btn.configure(state="disabled", text="Clipped")
+        self._clip_btn.configure(state="disabled", text="✂ Clipped")
 
     # ── Results card reveal animation ─────────────────────────────────────────
 
