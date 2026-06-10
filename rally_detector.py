@@ -133,8 +133,10 @@ class RallyDetector:
         # else: silently hold last valid bounds
 
     def _ball_in_bounds(self, ball_proj: Optional[tuple]) -> bool:
-        if ball_proj is None or self._court_bounds is None:
+        if ball_proj is None:
             return False
+        if self._court_bounds is None:
+            return True  # court not detected — assume in-bounds, rely on fault timer
         x, y = ball_proj
         xmin, ymin, xmax, ymax = self._court_bounds
         tol = 2.0

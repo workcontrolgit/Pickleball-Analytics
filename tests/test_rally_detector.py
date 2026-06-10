@@ -67,6 +67,16 @@ def test_ball_in_bounds_none():
     det = _make_det_with_court()
     assert det._ball_in_bounds(None) is False
 
+def test_ball_in_bounds_no_court_detection():
+    """When court detection failed (bounds unknown), any detected ball is treated as in-bounds.
+    Prevents rallies from ending immediately as 'out' when court homography is unavailable.
+    """
+    det = RallyDetector(fps=30)
+    # Court bounds never set — court detection failed for this video
+    assert det._court_bounds is None
+    assert det._ball_in_bounds((200.0, 500.0)) is True
+    assert det._ball_in_bounds((50.0, 50.0)) is True
+
 def test_net_crossing_detected():
     det = _make_det_with_court(net_y=500.0)
     det.state = det.OPEN_PLAY

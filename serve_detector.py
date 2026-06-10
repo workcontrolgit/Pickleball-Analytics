@@ -29,11 +29,13 @@ class ServeCandidate:
 
 
 class ServeDetector:
-    STILLNESS_FRAMES = 15    # frames ball must be stationary
-    STILLNESS_PX = 20        # max movement to count as stationary
-    LAUNCH_PX = 50           # min movement to count as launch
+    STILLNESS_FRAMES = 7     # frames ball must be stationary
+    STILLNESS_PX = 25        # max movement to count as stationary
+    LAUNCH_PX = 30           # min movement to count as launch
+    MAX_LAUNCH_PX = 500      # max movement — filters wild false positives (e.g. tracker jumps)
     COOLDOWN_SEC = 5.0       # seconds between detections
     MAX_GAP_FRAMES = 5       # tolerate up to 5 consecutive missing detections
+    MAX_PLAYER_DIST_PX = 300 # ball must be within this distance of a player to qualify
 
     def __init__(self, fps: int = 30):
         self._fps = fps
@@ -78,18 +80,34 @@ class ServeDetector:
                 # Ball moved — check if this is a launch
                 if self._still_count >= self.STILLNESS_FRAMES and self._last_ball is not None:
                     launch_dist = np.hypot(bx - self._last_ball[0], by - self._last_ball[1])
-                    if launch_dist >= self.LAUNCH_PX:
-                        candidate = self._build_candidate(frame_idx, frame, ball_proj, players)
-                        self._last_detected_frame = frame_idx
-                        self._reset_stillness()
-                        self._last_ball = ball_proj
-                        return candidate
+                    if self.LAUNCH_PX <= launch_dist <= self.MAX_LAUNCH_PX:
+                        # Only emit if ball was near a player during stillness
+                        if self._ball_near_player(self._still_pos, players):
+                            candidate = self._build_candidate(frame_idx, frame, ball_proj, players)
+                            self._last_detected_frame = frame_idx
+                            self._reset_stillness()
+                            self._last_ball = ball_proj
+                            return candidate
                 # Reset stillness to new position
                 self._still_pos = (bx, by)
                 self._still_count = 1
 
         self._last_ball = ball_proj
         return None
+
+    def _ball_near_player(self, ball_pos: tuple, players: list) -> bool:
+        """Return True if ball_pos is within MAX_PLAYER_DIST_PX of any player's center."""
+        if not players:
+            return True  # no player data — don't filter
+        bx, by = ball_pos
+        for p in players or []:
+            bbox = p.get("bbox", [])
+            if len(bbox) == 4:
+                px = (bbox[0] + bbox[2]) / 2
+                py = (bbox[1] + bbox[3]) / 2
+                if np.hypot(bx - px, by - py) <= self.MAX_PLAYER_DIST_PX:
+                    return True
+        return False
 
     def _reset_stillness(self):
         self._still_pos = None
