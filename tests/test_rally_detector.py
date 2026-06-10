@@ -159,3 +159,76 @@ def test_no_end_condition_when_active():
     det._last_inbounds_frame = 10
     reason = det._check_end_condition(11, (200.0, 500.0))
     assert reason is None
+
+
+# --- Task 6: Full FSM update() and rally finalization ---
+
+from serve_detector import ServeCandidate
+import numpy as np
+
+def _make_serve_event(frame_idx=0):
+    return ServeCandidate(
+        frame_idx=frame_idx,
+        timestamp_sec=frame_idx / 30.0,
+        player_id=1,
+        ball_pos=(200.0, 800.0),
+        frame_small=np.zeros((720, 1280, 3), dtype=np.uint8),
+    )
+
+def _run_full_rally(det, start=0, length=90):
+    """Simulate a complete rally: serve → 2 net crossings → ball OOB."""
+    net_y = 500.0
+    det._net_y = net_y
+    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
+
+    # Serve at frame `start`
+    det.update(start, (200.0, 800.0), 700.0, _make_serve_event(start), net_y, None)
+
+    # Ball moves to far side (1st crossing)
+    for fi in range(start + 1, start + 20):
+        det.update(fi, (200.0, 300.0), 300.0, None, net_y, None)
+
+    # Ball bounces far side (simulate y2 peak)
+    for y2 in [280.0, 300.0, 320.0, 340.0, 345.0, 330.0, 310.0]:
+        det.update(start + 20, (200.0, 300.0), y2, None, net_y, None)
+
+    # Ball returns (2nd crossing)
+    for fi in range(start + 21, start + 40):
+        det.update(fi, (200.0, 700.0), 600.0, None, net_y, None)
+
+    # Open play — several more crossings
+    for fi in range(start + 40, start + length - 3):
+        side_y = 300.0 if fi % 20 < 10 else 700.0
+        det.update(fi, (200.0, side_y), 400.0, None, net_y, None)
+
+    # Ball goes OOB for 3+ frames
+    for fi in range(start + length - 3, start + length):
+        det.update(fi, (600.0, 500.0), 400.0, None, net_y, None)
+
+def test_full_rally_recorded():
+    det = RallyDetector(fps=30)
+    _run_full_rally(det, start=10, length=90)
+    rallies = det.get_rallies()
+    assert len(rallies) == 1
+    r = rallies[0]
+    assert r.rally_num == 1
+    assert r.start_frame == 10
+    assert r.end_reason == "out"
+    assert r.two_bounce_complete is True
+
+def test_two_rallies_recorded():
+    det = RallyDetector(fps=30)
+    _run_full_rally(det, start=0, length=90)
+    _run_full_rally(det, start=200, length=60)
+    assert len(det.get_rallies()) == 2
+    assert det.get_rallies()[1].rally_num == 2
+
+def test_no_rally_without_serve():
+    det = RallyDetector(fps=30)
+    net_y = 500.0
+    det._net_y = net_y
+    det._validate_and_set_court_bounds((0.0, 0.0, 400.0, 1000.0))
+    # Ball in bounds but no serve event
+    for fi in range(100):
+        det.update(fi, (200.0, 400.0), 400.0, None, net_y, None)
+    assert det.get_rallies() == []
