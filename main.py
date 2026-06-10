@@ -23,11 +23,14 @@ Primary entry point
 import os
 import customtkinter as ctk
 from tkinter import filedialog
+from typing import Optional
 from process_video import (
     VideoProcessor,
     MODE_VIDEO_ANALYSIS,
     MODE_SPLIT_RALLIES,
     MODE_DETECT_SERVE,
+    MODE_DETECT_RALLIES,
+    MODE_CLIP_FROM_REPORT,
 )
 import threading
 import cv2
@@ -71,9 +74,10 @@ def _extract_thumbnail(path: str, thumb_w: int = 260, thumb_h: int = 146):
 
 
 MODE_DESCRIPTIONS = {
-    "Video Analysis": "Produces an annotated video with overlays and analytics",
-    "Split Rallies":  "Finds long rallies and saves each one as a clip",
-    "Detect Serve":   "Scores serves using AI vision — fastest mode",
+    "Video Analysis":  "Produces an annotated video with overlays and analytics",
+    "Split Rallies":   "Finds long rallies and saves each one as a clip",
+    "Detect Serve":    "Scores serves using AI vision — fastest mode",
+    "Detect Rallies":  "Detect rallies, review summary, then clip",
 }
 
 
@@ -89,6 +93,9 @@ class App(ctk.CTk):
         self.out_dir = None
         self.mode_var = ctk.StringVar(value="Video Analysis")
         self._reveal_id = None
+        self._rally_report_path: Optional[str] = None
+        self._clip_btn = None
+        self._rally_list_box = None
 
         self._build_ui()
         self._set_state_idle()
@@ -235,7 +242,7 @@ class App(ctk.CTk):
 
         self.mode_selector = ctk.CTkSegmentedButton(
             card,
-            values=["Video Analysis", "Split Rallies", "Detect Serve"],
+            values=["Video Analysis", "Split Rallies", "Detect Serve", "Detect Rallies"],
             variable=self.mode_var,
             state="disabled",
             selected_color=CTA,
@@ -452,7 +459,116 @@ class App(ctk.CTk):
             text=f"Error: {error_msg}", text_color=ERROR
         )
 
+    def _set_state_report_ready(self, rally_report_path: str, rallies: list, out_dir: str):
+        """Show rally summary after MODE_DETECT_RALLIES completes."""
+        self._rally_report_path = rally_report_path
+        self.browse_btn.configure(state="normal")
+        self.mode_selector.configure(state="normal")
+        self.process_btn.configure(state="normal")
+        self.progress_bar.set(1.0)
+        self.status_label.configure(text="Analysis complete — review rallies below", text_color=SUCCESS)
+        self.out_dir = out_dir
+
+        count = len(rallies)
+        if count == 0:
+            badge_text = "No rallies detected"
+        else:
+            durations = [r["duration_sec"] for r in rallies]
+            avg_s = sum(durations) / len(durations)
+            max_s = max(durations)
+            badge_text = f"{count} {'rally' if count == 1 else 'rallies'} · avg {avg_s:.1f}s · longest {max_s:.1f}s"
+
+        self.rally_badge_label.configure(text=badge_text)
+        self.output_path_label.configure(text=out_dir)
+
+        # Populate rally list textbox
+        if self._rally_list_box is not None:
+            self._rally_list_box.configure(state="normal")
+            self._rally_list_box.delete("1.0", "end")
+        else:
+            self._rally_list_box = ctk.CTkTextbox(
+                self.results_card,
+                height=120,
+                font=ctk.CTkFont(size=11, family="Courier"),
+                fg_color=BG,
+                text_color=BODY_TEXT,
+                state="normal",
+            )
+            self._rally_list_box.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
+
+        lines = []
+        for r in rallies:
+            flag = "" if r["two_bounce_complete"] else " !"
+            lines.append(
+                f"Rally {r['rally_num']:>2}  {r['start_sec']:6.1f}s - {r['end_sec']:6.1f}s"
+                f"  ({r['duration_sec']:.1f}s)  {r['end_reason']}{flag}"
+            )
+        self._rally_list_box.insert("end", "\n".join(lines))
+        self._rally_list_box.configure(state="disabled")
+
+        # Clip Rallies button
+        if self._clip_btn is None:
+            self._clip_btn = ctk.CTkButton(
+                self.results_card,
+                text="Clip Rallies",
+                fg_color=SUCCESS,
+                text_color="black",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                corner_radius=8,
+                command=self._on_clip_rallies,
+            )
+            self._clip_btn.grid(row=5, column=0, padx=16, pady=(0, 16), sticky="ew")
+        else:
+            self._clip_btn.configure(state="normal", text="Clip Rallies")
+
+        self._reveal_results_tall()
+
+    def _on_clip_rallies(self):
+        if not self._rally_report_path:
+            return
+        self._clip_btn.configure(state="disabled")
+        self.status_label.configure(text="Clipping rallies\u2026", text_color=MUTED_TEXT)
+        threading.Thread(target=self._run_clip_from_report, daemon=True).start()
+
+    def _run_clip_from_report(self):
+        def update_progress(value):
+            self.after(0, lambda: self.progress_bar.set(value))
+        try:
+            processor = VideoProcessor(
+                self.video_path, {}, mode=MODE_CLIP_FROM_REPORT,
+                rally_report_path=self._rally_report_path,
+            )
+            processor.process_video(progress_callback=update_progress)
+            out_dir = processor.output_dir
+            self.after(0, lambda od=out_dir: self._set_state_clip_done(od))
+        except Exception as e:
+            err = str(e)
+            self.after(0, lambda: self._set_state_error(err))
+
+    def _set_state_clip_done(self, out_dir: str):
+        self.progress_bar.set(1.0)
+        self.status_label.configure(text="Clips saved!", text_color=SUCCESS)
+        self.rally_badge_label.configure(
+            text=self.rally_badge_label.cget("text").split("·")[0].strip() + " — clips saved"
+        )
+        self.output_path_label.configure(text=out_dir)
+        self.out_dir = out_dir
+        if self._clip_btn:
+            self._clip_btn.configure(state="disabled", text="Clipped")
+
     # ── Results card reveal animation ─────────────────────────────────────────
+
+    def _reveal_results_tall(self, step=0):
+        """Taller reveal for rally report (needs room for list + clip button)."""
+        target = 280
+        increment = 20
+        delay = 20
+        current = step * increment
+        if current <= target:
+            self.results_card.configure(height=current)
+            self._reveal_id = self.after(delay, lambda: self._reveal_results_tall(step + 1))
+        else:
+            self._reveal_id = None
 
     def _reveal_results(self, step=0):
         target = 90
@@ -498,13 +614,27 @@ class App(ctk.CTk):
 
         try:
             mode_map = {
-                "Video Analysis": MODE_VIDEO_ANALYSIS,
-                "Split Rallies":  MODE_SPLIT_RALLIES,
-                "Detect Serve":   MODE_DETECT_SERVE,
+                "Video Analysis":  MODE_VIDEO_ANALYSIS,
+                "Split Rallies":   MODE_SPLIT_RALLIES,
+                "Detect Serve":    MODE_DETECT_SERVE,
+                "Detect Rallies":  MODE_DETECT_RALLIES,
             }
             mode = mode_map[mode_label]
             processor = VideoProcessor(self.video_path, filters, mode=mode)
             processor.process_video(progress_callback=update_progress)
+
+            if mode == MODE_DETECT_RALLIES:
+                import json
+                report_path = os.path.join(processor.output_dir, "rally_report.json")
+                with open(report_path) as f:
+                    report = json.load(f)
+                rallies = report.get("rallies", [])
+                self.after(
+                    0,
+                    lambda rp=report_path, rv=rallies, od=processor.output_dir:
+                        self._set_state_report_ready(rp, rv, od),
+                )
+                return
 
             rally_count   = len(processor.analytics._long_rallies) if hasattr(processor, "analytics") else 0
             serve_results = processor.serve_analyzer.get_results() if hasattr(processor, "serve_analyzer") else []
